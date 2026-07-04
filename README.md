@@ -2,6 +2,12 @@
 
 Blender 插件和本地转换器，用于把 Unity `.unity3d` / AssetBundle 文件临时转换为 FBX 后直接导入 Blender。
 
+## 代码来源说明
+
+本项目的 AssetBundle 解析、模型转换和贴图导出能力基于 [AssetStudio](https://github.com/Perfare/AssetStudio) 的代码和库构建。AssetStudio 使用 MIT License，本仓库已在 `THIRD_PARTY_NOTICES.md` 中保留其版权和许可证声明。
+
+本仓库没有使用或打包 AssetRipper；AssetRipper 仅在早期方案调研中参考过。
+
 ## 功能
 
 - 在 Blender 菜单 `文件 > 导入 > Unity3D资源包 (.unity3d)` 中选择 `.unity3d`、`.ab` 或 `.bundle` 文件。

@@ -2,9 +2,11 @@
 
 This project bundles or references third-party components. Their original licenses remain in effect.
 
+本项目的 Unity AssetBundle 解析、FBX 导出和贴图导出能力基于 AssetStudio 的代码和库构建。发布本项目时必须保留 AssetStudio 的 upstream 链接、版权声明和 MIT License 文本。
+
 ## AssetStudio
 
-The converter is based on AssetStudio libraries.
+The converter is based on AssetStudio code and libraries.
 
 - Project: https://github.com/Perfare/AssetStudio
 - License: MIT
