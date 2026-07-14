@@ -13,7 +13,7 @@ import tempfile
 from pathlib import Path
 
 import bpy
-from bpy.props import BoolProperty, StringProperty
+from bpy.props import BoolProperty, EnumProperty, FloatProperty, StringProperty
 from bpy_extras.io_utils import ImportHelper
 
 
@@ -41,9 +41,36 @@ class UNITY3D_OT_import_assetbundle(bpy.types.Operator, ImportHelper):
     )
 
     clear_scene: BoolProperty(
-        name="Clear Scene Before Import",
-        description="Delete existing scene objects before importing FBX files",
+        name="导入前清理场景",
+        description="导入 FBX 前删除现有场景对象",
         default=False,
+    )
+
+    scale_factor: FloatProperty(
+        name="缩放倍数",
+        description="按指定值缩放导入模型",
+        default=10.0,
+        min=0.001,
+        soft_max=1000.0,
+    )
+
+    bone_display_type: EnumProperty(
+        name="骨骼显示模式",
+        description="选择导入骨骼的显示方式。",
+        items=(
+            ("OCTAHEDRAL", "八面锥", "以八面锥显示骨骼"),
+            ("STICK", "棍形", "以棍形显示骨骼"),
+            ("BBONE", "柔性骨骼", "以柔性骨骼显示骨骼"),
+            ("ENVELOPE", "封套", "以封套显示骨骼"),
+            ("WIRE", "线框", "以线框显示骨骼"),
+        ),
+        default="OCTAHEDRAL",
+    )
+
+    cleanup_empty_hierarchy: BoolProperty(
+        name="清理无用空对象",
+        description="压平无动画、约束和自定义属性的空对象层级",
+        default=True,
     )
 
     def execute(self, context):
@@ -100,6 +127,11 @@ class UNITY3D_OT_import_assetbundle(bpy.types.Operator, ImportHelper):
                     world_matrix = obj.matrix_world.copy()
                     obj.parent = character_root
                     obj.matrix_world = world_matrix
+                if obj.type == "ARMATURE":
+                    obj.data.display_type = self.bone_display_type
+            if self.cleanup_empty_hierarchy:
+                _flatten_empty_hierarchy(character_root, imported_objects)
+            character_root.scale = (self.scale_factor,) * 3
 
             packed = 0
             for image in bpy.data.images:
@@ -112,6 +144,39 @@ class UNITY3D_OT_import_assetbundle(bpy.types.Operator, ImportHelper):
 
         self.report({"INFO"}, f"已导入 {imported} 个 FBX，并打包 {packed} 张贴图")
         return {"FINISHED"}
+
+
+def _flatten_empty_hierarchy(root: bpy.types.Object, imported_objects: list[bpy.types.Object]) -> None:
+    imported_set = set(imported_objects)
+    empty_objects = [
+        obj
+        for obj in imported_objects
+        if obj.type == "EMPTY" and (obj.parent is root or obj.parent in imported_set)
+    ]
+    for empty in sorted(empty_objects, key=_object_hierarchy_depth, reverse=True):
+        if (
+            empty.animation_data
+            or empty.constraints
+            or empty.instance_type != "NONE"
+            or empty.parent_type != "OBJECT"
+            or empty.keys()
+        ):
+            continue
+        parent = empty.parent
+        for child in list(empty.children):
+            world_matrix = child.matrix_world.copy()
+            child.parent = parent
+            child.matrix_world = world_matrix
+        bpy.data.objects.remove(empty, do_unlink=True)
+
+
+def _object_hierarchy_depth(obj: bpy.types.Object) -> int:
+    depth = 0
+    parent = obj.parent
+    while parent is not None:
+        depth += 1
+        parent = parent.parent
+    return depth
 
 
 def menu_func_import(self, context):
