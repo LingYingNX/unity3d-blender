@@ -1,0 +1,16 @@
+bin/
+obj/
+.vs/
+.idea/
+.vscode/
+.worktrees/
+*.user
+*.suo
+*.log
+*.tmp
+*.blend1
+*_fbx_export/
+*_fbx_import_*/
+dist/
+third_party/AssetStudio/
+!third_party/README.md
