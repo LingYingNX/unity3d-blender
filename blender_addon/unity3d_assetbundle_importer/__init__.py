@@ -1,7 +1,7 @@
 bl_info = {
     "name": "Unity3D资源包导入器",
     "author": "Local",
-    "version": (1, 0, 0),
+    "version": (0, 2, 0),
     "blender": (4, 0, 0),
     "location": "文件 > 导入 > Unity3D资源包 (.unity3d)",
     "description": "选择 Unity3D AssetBundle 文件，临时转换为 FBX，打包贴图并导入当前 Blender 场景。",
@@ -19,6 +19,21 @@ from bpy_extras.io_utils import ImportHelper
 
 ADDON_DIR = Path(__file__).resolve().parent
 CONVERTER_EXE = ADDON_DIR / "tools" / "AssetBundleToBlender" / "AssetBundleToBlender.exe"
+REPOSITORY_URL = "https://github.com/LingYingNX/unity3d-blender"
+
+
+class UNITY3D_AP_preferences(bpy.types.AddonPreferences):
+    bl_idname = __package__
+
+    def draw(self, context):
+        layout = self.layout
+        layout.label(text="远程仓库")
+        link = layout.operator(
+            "wm.url_open",
+            text="LingYingNX/unity3d-blender",
+            icon="URL",
+        )
+        link.url = REPOSITORY_URL
 
 
 class UNITY3D_OT_import_assetbundle(bpy.types.Operator, ImportHelper):
@@ -183,7 +198,10 @@ def menu_func_import(self, context):
     self.layout.operator(UNITY3D_OT_import_assetbundle.bl_idname, text="Unity3D资源包 (.unity3d)")
 
 
-classes = (UNITY3D_OT_import_assetbundle,)
+classes = (
+    UNITY3D_AP_preferences,
+    UNITY3D_OT_import_assetbundle,
+)
 
 
 def register():
