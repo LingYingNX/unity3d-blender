@@ -10,6 +10,7 @@ import tempfile
 from pathlib import Path
 
 import bpy
+from mathutils import Vector
 from bpy.props import (
     BoolProperty,
     CollectionProperty,
@@ -357,6 +358,39 @@ class UNITYPY_OT_import_zipmod(bpy.types.Operator, ImportHelper):
             self.report(
                 {"WARNING"},
                 "{0}；需要的话用面板里的「目标骨骼 / 挂点偏移」手动指定".format("、".join(skipped)),
+            )
+
+        # 落地自检：挂点解析不出来时 bundle 会留在地面附近。这里按骨架高度主动报出来，
+        # 免得要等到看图才发现；认不出的挂点也一并报名字，方便补映射。
+        unplaced = []
+        for (bundle_collection, bundle_root), importer in zip(bundles, importers):
+            if not importer.report.objects or bundle_root.parent_type == "BONE":
+                continue
+            meshes = [object_ for object_ in bundle_collection.all_objects if object_.type == "MESH"]
+            rig = pick_rig({object_.name for object_ in bundle_collection.all_objects})
+            if not meshes or rig is None or not rig.data.bones:
+                continue
+            height = max((bone.head_local.z for bone in rig.data.bones), default=0.0)
+            if height <= 0.0:
+                continue
+            zs = [
+                (object_.matrix_world @ Vector(corner)).z
+                for object_ in meshes
+                for corner in object_.bound_box
+            ]
+            if zs and max(zs) < height * 0.2:
+                entry = entries.get(unity_loader.bundle_key(importer.ref.display)) or {}
+                unplaced.append(
+                    "{0}（声明挂点 {1}，整只仍在 z≤{2:.1f}）".format(
+                        bundle_root.name, entry.get("parent") or "未声明", max(zs)
+                    )
+                )
+        if unplaced:
+            self.report(
+                {"WARNING"},
+                "这些 bundle 没自动落到角色身上，请用「目标骨骼 / 挂点偏移」手动指定：{0}".format(
+                    "、".join(unplaced)
+                ),
             )
     def _rollback(self, bundles, importers, root=None):
         """失败时清掉本次新建的集合、物体和数据块，不留半成品。"""

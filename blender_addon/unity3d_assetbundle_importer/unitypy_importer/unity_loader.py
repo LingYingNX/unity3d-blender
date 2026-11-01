@@ -314,8 +314,61 @@ _NODE_BONE_CANDIDATES = {
 }
 
 
+# 挂点名里的部位关键词 → 该部位的骨候选链。这样遇到没写在精确表里的新挂点（不同作者、
+# 不同游戏）也能按名字自己认出来，不用每次补一条。
+_REGION_KEYWORDS = (
+    ("head", ("head", "hair", "face", "eye", "ear", "earring", "mouth", "nose", "cheek",
+              "horn", "hat", "cap", "visor", "mask", "glasses", "crown", "halo", "ff", "ahoge")),
+    ("neck", ("neck", "kubi", "collar")),
+    ("chest", ("chest", "mune", "breast", "bust")),
+    ("waist", ("waist", "kosi", "hip", "pelvis", "spine", "back", "belt", "skirt", "tail")),
+    ("shoulder", ("shoulder", "kata")),
+    ("arm", ("arm", "ude", "elbow", "elbo", "wrist", "forearm")),
+    ("hand", ("hand", "te", "finger", "yubi")),
+    ("leg", ("leg", "thigh", "knee", "ashi", "shin", "calf")),
+    ("foot", ("foot", "ankle", "heel", "toe", "shoe", "sock", "boot")),
+)
+
+_REGION_BONES = {
+    "head": ("cf_J_Head_s", "cf_J_Head", "cf_J_Neck"),
+    "neck": ("cf_J_Neck", "cf_J_Head_s", "cf_J_Spine02_s"),
+    "chest": ("cf_J_Spine02_s", "cf_J_Mune00_s_L", "cf_J_Spine01_s"),
+    "waist": ("cf_J_Kosi01_s", "cf_J_Kosi02_s", "cf_J_Hips"),
+    "shoulder": ("cf_J_ArmUp01_s_L", "cf_J_ArmUp01_s_R", "cf_J_Spine02_s"),
+    "arm": ("cf_J_ArmLow02_s_L", "cf_J_ArmLow02_s_R", "cf_J_ArmLow01_s_L", "cf_J_ArmLow01_s_R"),
+    "hand": ("cf_J_Hand_Wrist_s_L", "cf_J_Hand_Wrist_s_R", "cf_J_Hand_L", "cf_J_Hand_R"),
+    "leg": ("cf_J_LegLow01_s_L", "cf_J_LegLow01_s_R", "cf_J_LegUp01_s_L", "cf_J_LegUp01_s_R"),
+    "foot": ("cf_J_Foot_L", "cf_J_Foot_R", "cf_J_Ankle_L", "cf_J_Ankle_R",
+             "cf_J_Toes01_L", "cf_J_Toes01_R", "cf_J_LegLow02_s_L", "cf_J_LegLow02_s_R"),
+}
+
+
+def node_side(declared: str) -> str:
+    """挂点名里的左右标记：l / r / 空（中线）。"""
+    name = (declared or "").lower()
+    if name.endswith("_l") or "_l_" in name or "left" in name:
+        return "l"
+    if name.endswith("_r") or "_r_" in name or "right" in name:
+        return "r"
+    return ""
+
+
+def node_region(declared: str) -> str:
+    """按关键词判断挂点属于哪个部位；认不出来返回空。"""
+    name = (declared or "").lower()
+    for region, keywords in _REGION_KEYWORDS:
+        for keyword in keywords:
+            if keyword in name:
+                return region
+    return ""
+
+
 def resolve_node_bone(declared: str, bone_names) -> str | None:
-    """把 characustom 里的挂点名（N_Head、N_Earring_L…）解析成骨架里真实存在的骨名。"""
+    """把 characustom 里的挂点名（N_Head、N_Earring_L…）解析成骨架里真实存在的骨名。
+
+    顺序：同名骨 → 精确表 → 部位关键词（带左右过滤）→ 去掉 N_ 前缀的子串匹配。
+    全部失败返回 None，让调用方保持原样并提示，而不是瞎猜一根骨。
+    """
     if not declared:
         return None
     if declared in bone_names:
@@ -323,8 +376,23 @@ def resolve_node_bone(declared: str, bone_names) -> str | None:
     for candidate in _NODE_BONE_CANDIDATES.get(declared, ()):
         if candidate in bone_names:
             return candidate
+
+    region = node_region(declared)
+    side = node_side(declared)
+    if region:
+        candidates = _REGION_BONES.get(region, ())
+        if side:
+            sided = [name for name in candidates if name.endswith("_" + side.upper())]
+            for name in sided:
+                if name in bone_names:
+                    return name
+        for name in candidates:
+            if name in bone_names:
+                return name
+
     stripped = declared[2:] if declared.startswith("N_") else declared
-    for candidate in bone_names:
-        if stripped and stripped in candidate:
-            return candidate
+    if stripped:
+        for candidate in bone_names:
+            if stripped.lower() in candidate.lower():
+                return candidate
     return None

@@ -486,6 +486,24 @@ def main() -> int:
         unity_loader.resolve_node_bone("N_NotExist", {"cf_J_Head_s"}) is None,
         "未知挂点不瞎猜",
     )
+    check(
+        unity_loader.resolve_node_bone("N_SomeNewEarringThing_L", {"cf_J_Head_s", "cf_J_Hips"})
+        == "cf_J_Head_s",
+        "没在表里的新挂点按关键词认到头",
+    )
+    check(
+        unity_loader.resolve_node_bone("N_SkirtBack", {"cf_J_Kosi01_s"}) == "cf_J_Kosi01_s",
+        "按关键词认到腰",
+    )
+    check(
+        unity_loader.resolve_node_bone("N_TotallyUnknown", {"cf_J_Head_s"}) is None,
+        "关键词也对不上时仍不猜",
+    )
+    check(
+        unity_loader.resolve_node_bone("N_Hand_L", {"cf_J_Hand_Wrist_s_L", "cf_J_Hand_Wrist_s_R"})
+        == "cf_J_Hand_Wrist_s_L",
+        "左右侧优先匹配同侧骨",
+    )
     reset_scene()
     robin = Path(r"F:\HY\HS22\HoneySelect2_ArcticFox\mods\崩坏 星穹铁道 知更鸟")
     clothes = robin / "1900sy.zipmod"
