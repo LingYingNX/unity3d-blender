@@ -441,6 +441,36 @@ def main() -> int:
                     print("    真挂点落点误差: {0:.4f}".format(delta))
                     check(delta < 0.01, "落点误差小于 0.01（实际 {0:.4f}）".format(delta))
 
+    # 10) 多选批量导入：一次调用导入两个文件，并且跨文件也能挂上角色骨
+    reset_scene()
+    batch = [
+        {"name": "[YYG]ZYLZ.unity3d"},
+        {"name": "[YYG]ZYLZTF.unity3d"},
+    ]
+    try:
+        result = bpy.ops.import_scene.zipmod(
+            filepath=str(FIXTURE_DIR / "abdata" / "chara" / "YYG" / "[YYG]ZYLZ.unity3d"),
+            directory=str(FIXTURE_DIR / "abdata" / "chara" / "YYG"),
+            files=batch,
+        )
+        status = "FINISHED" if result == {"FINISHED"} else "CANCELLED"
+    except Exception as exc:  # noqa: BLE001
+        status = "ERROR: {0}".format(exc)
+    if check(status == "FINISHED", "批量导入两个文件完成（{0}）".format(status)):
+        stats = scene_stats()
+        collections = set(stats["collections"])
+        check(
+            {"[YYG]ZYLZ", "[YYG]ZYLZTF"} <= collections,
+            "两个文件各自的集合都在（实际 {0}）".format(sorted(collections)),
+        )
+        check(stats["mesh_objects"] == 33, "33 个网格（28 + 5）（实际 {0}）".format(stats["mesh_objects"]))
+        rigs = [object_ for object_ in bpy.data.objects if object_.type == "ARMATURE"]
+        attached = sorted(
+            object_.name for object_ in bpy.data.objects if object_.type == "EMPTY" and object_.parent_type == "BONE"
+        )
+        print("    批量导入后骨架:", len(rigs), "挂到骨骼:", attached)
+        check(attached == ["[YYG]ZYLZTF"], "批量导入时头发挂到同批导入的衣服骨上（实际 {0}）".format(attached))
+
     failed = [message for ok, message in RESULTS if not ok]
     print("RESULT: {0} passed, {1} failed".format(len(RESULTS) - len(failed), len(failed)))
     for message in failed:

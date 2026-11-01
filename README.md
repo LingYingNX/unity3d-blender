@@ -42,7 +42,7 @@ Blender 插件：用 [UnityPy](https://github.com/K0lb3/UnityPy) 直接读取 Un
 ## 使用
 
 1. 选择 `文件 > 导入 > Zipmod / Unity3D（UnityPy 直读）`。
-2. 选文件：`.zipmod` 整包导入；也可以直接选单个 `.unity3d`。
+2. 选文件：`.zipmod` 整包导入；也可以直接选单个 `.unity3d`；**在文件浏览器里多选（Ctrl / Shift 点选）就会批量导入**，多选的文件共用一套设置、共用一个总根，跨文件也能挂到同批导入的角色骨上。
 3. 在右侧导入面板调整：导入骨骼蒙皮、导入贴图、贴图打包进 `.blend`、贴图输出目录、导入缩放。
 4. 导入结果的结构：`来源集合（如 [YYG]-…zipmod）` → `每个 bundle 的子集合（如 [YYG]ZYLZTF）` → `bundle 根空物体（缩放作用在它身上）` → `Unity 的 GameObject 层级空物体` → `网格对象`。
 5. 网格用 GameObject 原名命名，蒙皮网格挂 Armature 修改器；局部坐标的头发/饰品会自动挂到角色头骨（见上）。

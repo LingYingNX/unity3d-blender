@@ -10,7 +10,14 @@ import tempfile
 from pathlib import Path
 
 import bpy
-from bpy.props import BoolProperty, EnumProperty, FloatProperty, FloatVectorProperty, StringProperty
+from bpy.props import (
+    BoolProperty,
+    CollectionProperty,
+    EnumProperty,
+    FloatProperty,
+    FloatVectorProperty,
+    StringProperty,
+)
 from bpy_extras.io_utils import ImportHelper
 
 from . import builder, unity_loader
@@ -28,6 +35,9 @@ class UNITYPY_OT_import_zipmod(bpy.types.Operator, ImportHelper):
         options={"HIDDEN"},
     )
     filepath: StringProperty(subtype="FILE_PATH")
+    # 文件浏览器里多选时，Blender 把选中的文件名放进 files，目录放进 directory。
+    directory: StringProperty(subtype="DIR_PATH", options={"HIDDEN"})
+    files: CollectionProperty(type=bpy.types.OperatorFileListElement, options={"HIDDEN", "SKIP_SAVE"})
 
     import_armatures: BoolProperty(
         name="导入骨骼蒙皮",
@@ -85,9 +95,13 @@ class UNITYPY_OT_import_zipmod(bpy.types.Operator, ImportHelper):
     )
 
     def execute(self, context):
-        source = Path(self.filepath)
-        if not source.exists():
-            self.report({"ERROR"}, "路径不存在：{0}".format(source))
+        sources = self._sources()
+        missing = [path for path in sources if not path.exists()]
+        sources = [path for path in sources if path.exists()]
+        for path in missing:
+            self.report({"WARNING"}, "跳过不存在的路径：{0}".format(path))
+        if not sources:
+            self.report({"ERROR"}, "没有选中任何文件")
             return {"CANCELLED"}
 
         options = builder.ImportOptions(
@@ -108,45 +122,26 @@ class UNITYPY_OT_import_zipmod(bpy.types.Operator, ImportHelper):
         entries: dict[str, dict] = {}
         name_pools: dict[str, set[str]] = {}
         # 一个总根：整套 mod（主体 + 花、蝴蝶结这类配件）都挂在它下面，一起移动、一起缩放。
+        batch_name = sources[0].stem or "Zipmod"
         root = bpy.data.objects.new(
-            builder.unique_name(name_pools, "object", source.stem or "Zipmod", "root"), None
+            builder.unique_name(name_pools, "object", batch_name, "root"), None
         )
         context.scene.collection.objects.link(root)
         root.scale = (options.unit_scale,) * 3
-        try:
-            with unity_loader.collect_bundles(source) as bundle_set:
-                if not bundle_set.bundles:
-                    for warning in bundle_set.warnings:
-                        self.report({"WARNING"}, warning)
-                    self.report({"ERROR"}, "{0} 里没有找到 AssetBundle".format(source.name))
-                    return self._rollback(bundles, importers, root)
-                unitypy = unity_loader.import_unitypy()
-                entries = unity_loader.read_characustom(bundle_set.characustom)
-                for reference in bundle_set.bundles:
-                    bundle_name = Path(reference.display).stem or "bundle"
-                    bundle_collection = bpy.data.collections.new(
-                        bundle_name
-                    )
-                    context.scene.collection.children.link(bundle_collection)
-                    bundle_root = bpy.data.objects.new(
-                        builder.unique_name(name_pools, "object", bundle_name, "bundle"), None
-                    )
-                    bundle_collection.objects.link(bundle_root)
-                    bundle_root.parent = root
-                    bundles.append((bundle_collection, bundle_root))
-                    importer = builder.BundleImporter(
-                        unitypy, reference, options, bundle_collection, bundle_root, name_pools
-                    )
-                    importers.append(importer)
-                    reports.append(importer.run())
-                for warning in bundle_set.warnings:
-                    self.report({"WARNING"}, warning)
-        except unity_loader.UnityPyMissing as exc:
-            self.report({"ERROR"}, str(exc).splitlines()[0])
-            return self._rollback(bundles, importers, root)
-        except Exception as exc:  # noqa: BLE001 - 任何异常都不能让 Blender 崩
-            self.report({"ERROR"}, "{0}: {1}".format(type(exc).__name__, exc))
-            return self._rollback(bundles, importers, root)
+        for source in sources:
+            try:
+                part = self._import_source(context, source, options, root, name_pools)
+            except unity_loader.UnityPyMissing as exc:
+                self.report({"ERROR"}, str(exc).splitlines()[0])
+                return self._rollback(bundles, importers, root)
+            except Exception as exc:  # noqa: BLE001 - 单个文件失败不该拖垮整批
+                self.report({"WARNING"}, "{0} 导入失败：{1}: {2}".format(source.name, type(exc).__name__, exc))
+                continue
+            part_reports, part_importers, part_bundles, part_entries = part
+            reports.extend(part_reports)
+            importers.extend(part_importers)
+            bundles.extend(part_bundles)
+            entries.update(part_entries)
 
         imported = [report for report in reports if report.objects]
         if not imported:
@@ -155,7 +150,7 @@ class UNITYPY_OT_import_zipmod(bpy.types.Operator, ImportHelper):
                     self.report({"WARNING"}, warning)
                 for error in report.errors:
                     self.report({"ERROR"}, error)
-            self.report({"WARNING"}, "{0} 没有导入任何网格".format(source.name))
+            self.report({"WARNING"}, "{0} 没有导入任何网格".format(batch_name))
             return self._rollback(bundles, importers, root)
 
         self._select(imported)
@@ -170,11 +165,53 @@ class UNITYPY_OT_import_zipmod(bpy.types.Operator, ImportHelper):
                 self.report({"WARNING"}, error)
         self.report(
             {"INFO"},
-            "已导入 {0} 个网格、{1} 个顶点、{2} 个三角面、{3} 张贴图".format(
-                total_objects, total_vertices, total_triangles, total_images
+            "已导入 {0} 个来源、{1} 个网格、{2} 个顶点、{3} 个三角面、{4} 张贴图".format(
+                len(sources), total_objects, total_vertices, total_triangles, total_images
             ),
         )
         return {"FINISHED"}
+
+    def _sources(self) -> list[Path]:
+        """多选走 files + directory，单选走 filepath。"""
+        if self.files:
+            directory = Path(self.directory) if self.directory else None
+            names = [item.name for item in self.files if item.name]
+            if directory is not None and names:
+                return [directory / name for name in names]
+            return [Path(name) for name in names]
+        return [Path(self.filepath)] if self.filepath else []
+
+    def _import_source(self, context, source, options, root, name_pools):
+        """把一个来源里的所有 AssetBundle 导到 root 下面，返回 (reports, importers, bundles, entries)。"""
+        reports = []
+        importers = []
+        bundles = []
+        entries: dict[str, dict] = {}
+        with unity_loader.collect_bundles(source) as bundle_set:
+            if not bundle_set.bundles:
+                for warning in bundle_set.warnings:
+                    self.report({"WARNING"}, warning)
+                raise ValueError("{0} 里没有找到 AssetBundle".format(source.name))
+            unitypy = unity_loader.import_unitypy()
+            entries = unity_loader.read_characustom(bundle_set.characustom)
+            for reference in bundle_set.bundles:
+                bundle_name = Path(reference.display).stem or "bundle"
+                bundle_collection = bpy.data.collections.new(bundle_name)
+                context.scene.collection.children.link(bundle_collection)
+                bundle_root = bpy.data.objects.new(
+                    builder.unique_name(name_pools, "object", bundle_name, "bundle"), None
+                )
+                bundle_collection.objects.link(bundle_root)
+                bundle_root.parent = root
+                bundles.append((bundle_collection, bundle_root))
+                importer = builder.BundleImporter(
+                    unitypy, reference, options, bundle_collection, bundle_root, name_pools
+                )
+                importers.append(importer)
+                reports.append(importer.run())
+            for warning in bundle_set.warnings:
+                self.report({"WARNING"}, warning)
+        return reports, importers, bundles, entries
 
     def _attach_to_character_bone(self, context, bundles, importers, entries):
         """按登记表把局部坐标的 bundle 挂到角色的骨骼或挂点节点上。
