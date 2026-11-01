@@ -31,6 +31,16 @@ def check(condition: bool, message: str) -> bool:
     return bool(condition)
 
 
+def operator_exists(idname: str) -> bool:
+    """bpy.ops 的属性访问永远成功，只有 get_rna_type() 才能证明操作符真的注册了。"""
+    module, name = idname.split(".", 1)
+    try:
+        getattr(getattr(bpy.ops, module), name).get_rna_type()
+    except Exception:  # noqa: BLE001 - 缺操作符时 Blender 抛 KeyError
+        return False
+    return True
+
+
 class FakeOperatorProperties:
     """Blender 的 OperatorProperties：属性靠赋值设置。"""
 
@@ -94,23 +104,28 @@ def main() -> int:
     print("Blender {0}".format(bpy.app.version_string))
     bpy.ops.preferences.addon_enable(module="unity3d_assetbundle_importer")
 
-    check(hasattr(bpy.ops.import_scene, "unity3d_assetbundle"), "旧的 FBX 路线操作符仍在")
-    check(hasattr(bpy.ops.import_scene, "zipmod"), "新的直读操作符已注册")
+    check(
+        not operator_exists("import_scene.unity3d_assetbundle"),
+        "旧的 FBX 路线操作符已移除",
+    )
+    check(operator_exists("import_scene.zipmod"), "直读操作符已注册")
+    check(
+        not hasattr(addon, "UNITY3D_OT_import_assetbundle"),
+        "插件里不再包含旧的 FBX 操作符类",
+    )
 
     menu = FakeMenu()
-    for name, function in (
-        ("legacy", addon.menu_func_import),
-        ("unitypy", unitypy_importer.menu_func_import),
-    ):
-        try:
-            function(menu, None)
-            check(True, "{0} 菜单函数只用了合法参数".format(name))
-        except TypeError as exc:
-            check(False, "{0} 菜单函数参数非法: {1}".format(name, exc))
+    try:
+        unitypy_importer.menu_func_import(menu, None)
+        check(True, "菜单函数只用了合法参数")
+    except TypeError as exc:
+        check(False, "菜单函数参数非法: {0}".format(exc))
 
-    registered = {call[0] for call in menu.layout.calls}
-    check("import_scene.unity3d_assetbundle" in registered, "旧菜单条目存在")
-    check("import_scene.zipmod" in registered, "新菜单条目存在")
+    registered = [call[0] for call in menu.layout.calls]
+    check(
+        registered == ["import_scene.zipmod"],
+        "导入菜单里只注册一个条目（实际 {0}）".format(registered),
+    )
     labels = {call[0]: call[1] for call in menu.layout.calls}
     print("菜单条目:", labels)
 

@@ -2,7 +2,7 @@
 
 This project bundles or references third-party components. Their original licenses remain in effect.
 
-本项目的 Unity AssetBundle 解析、FBX 导出和贴图导出能力基于 AssetStudio 的代码和库构建。发布本项目时必须保留 AssetStudio 的 upstream 链接、版权声明和 MIT License 文本。
+本项目的 AssetStudio -> FBX 路线（现已归档到 `legacy/assetstudio_fbx/`，不随插件打包）基于 AssetStudio 的代码和库构建。再分发那条路线时必须保留 AssetStudio 的 upstream 链接、版权声明和 MIT License 文本。
 
 ## AssetStudio
 
@@ -40,9 +40,11 @@ SOFTWARE.
 
 ## Bundled runtime dependencies
 
-The Blender add-on zip includes the converter runtime and dependency DLLs, including AssetStudio, Mono.Cecil, K4os.Compression.LZ4, SixLabors.ImageSharp, SixLabors.Fonts, and native helper DLLs used by AssetStudio.
+仓库的 `legacy/assetstudio_fbx/tools/AssetBundleToBlender/` 保存着转换器运行时和依赖 DLL，
+包括 AssetStudio、Mono.Cecil、K4os.Compression.LZ4、SixLabors.ImageSharp、SixLabors.Fonts
+以及 AssetStudio 用的原生辅助 DLL。这些文件不再进入插件的 zip，只作为归档保留在仓库里。
 
-These dependencies are redistributed only to make the Blender add-on installable. Review each dependency's upstream license before redistributing modified builds.
+再分发这些依赖前，请先核对各自的上游许可证。
 
 ## AssetRipper
 

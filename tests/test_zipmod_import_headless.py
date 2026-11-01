@@ -32,6 +32,16 @@ def check(condition: bool, message: str) -> bool:
     return bool(condition)
 
 
+def operator_exists(idname: str) -> bool:
+    """bpy.ops 的属性访问永远成功，只有 get_rna_type() 才能证明操作符真的注册了。"""
+    module, name = idname.split(".", 1)
+    try:
+        getattr(getattr(bpy.ops, module), name).get_rna_type()
+    except Exception:  # noqa: BLE001 - 缺操作符时 Blender 抛 KeyError
+        return False
+    return True
+
+
 def ensure_fixtures() -> Path | None:
     """Extract the chara bundles out of the zipmod once, reuse afterwards."""
     single = FIXTURE_DIR / "abdata" / "chara" / "YYG" / "[YYG]ZYLZ.unity3d"
@@ -168,7 +178,8 @@ def import_path(path: Path, **overrides) -> str:
 def main() -> int:
     print("Blender {0} | Python {1}".format(bpy.app.version_string, sys.version.split()[0]))
     bpy.ops.preferences.addon_enable(module="unity3d_assetbundle_importer")
-    check(hasattr(bpy.ops.import_scene, "unity3d_assetbundle"), "旧的 FBX 路线仍可用")
+    check(not operator_exists("import_scene.unity3d_assetbundle"), "旧的 FBX 路线已移除")
+    check(operator_exists("import_scene.zipmod"), "直读操作符可用")
 
     single = ensure_fixtures()
     if not check(single is not None, "拿到固件（{0}）".format(ARCHIVE.name)):
