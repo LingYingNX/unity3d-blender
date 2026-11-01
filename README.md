@@ -9,7 +9,7 @@
 ## 安装
 
 1. 装依赖（一次即可）：`"<Blender 安装目录>\<版本>\python\bin\python.exe" -m pip install --upgrade UnityPy`
-2. 用 `scripts/package_addon.ps1` 生成插件 zip（或用 Release 里的），Blender 里 `编辑 > 偏好设置 > 插件 > 安装...` 选中并启用。
+2. 下载 [v0.3.0 插件包](https://github.com/LingYingNX/unity3d-blender/releases/download/v0.3.0/unity3d_assetbundle_importer_blender_addon.zip)（或自己跑 `scripts/package_addon.ps1` 生成），Blender 里 `编辑 > 偏好设置 > 插件 > 安装...` 选中并启用。
 
 ## 用法
 
