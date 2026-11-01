@@ -17,7 +17,7 @@ Blender 插件：用 [UnityPy](https://github.com/K0lb3/UnityPy) 直接读取 Un
 - 贴图解码后写 PNG，并在导入时打包进 `.blend`，避免保存后丢图。
 - `SkinnedMeshRenderer` 的骨骼合并成一套骨架（一个 AssetBundle 一套），写入顶点权重并挂 Armature 修改器。
 - 按 Unity 的 GameObject 层级重建空物体树：父节点、名字、局部变换都跟 prefab 一致，Outliner 里不再是平铺的一堆网格；每个 AssetBundle 单独放进一个子集合（如 `[YYG]ZYLZTF`）。
-- 挂载按 zipmod 自带的 `abdata/list/characustom/*.csv` 判定：头发（`SetHair` 行）挂头骨（`cf_J_Head`，缺了就试 `cf_J_Head_s`）；饰品（`Parent` 行）挂它声明的那根节点；衣服靠角色骨架自己定位、不挂。没有登记信息的 bundle 退回启发式（自带 `cf_J_*` 骨的不挂，其余当局部坐标挂头骨）。饰品声明的节点不在骨架里时**不挂**并给出提示，不会硬塞到头骨上。
+- 挂载按 zipmod 自带的 `abdata/list/characustom/*.csv` 判定：头发（`SetHair` 行）挂头骨；饰品（`Parent` 行）挂它声明的节点 —— 节点可能是骨骼、也可能是 HS2 的 `N_*` 挂点；挂点在包里只有贴地占位点时，按挂点表映射到真实的角色骨（`N_Head` → `cf_J_Head_s`，`N_Waist` → `cf_J_Kosi01_s`，`N_Hand_L` → `cf_J_Hand_Wrist_s_L` 等，见 `unity_loader._NODE_BONE_CANDIDATES`）。衣服靠角色骨架自己定位、不挂。没有登记信息也没有可映射挂点的 bundle 退回启发式（自带 `cf_J_*` 骨的不挂，其余当局部坐标挂头骨）。
 - 骨骼：把 SMR 没引用的中间节点补进骨架、按「骨名 + 世界矩阵」合并重复的骨架副本。这套衣服实测从 181 骨 / 6 个并列根骨变成 **225 骨 / 1 个根骨 `cf_J_Hips` / 层级深度 21**，动一根根骨就能带整只模型。
 - 导入缩放：HS2 几何约 10 单位每米，填 `0.1` 即换算成米；默认 `1.0` 保持原尺度。
 - 失败回滚：路径不存在、压缩包损坏、解出 0 个网格时，本次新建的集合、物体、网格、骨架、材质、贴图全部清掉，不留半成品。

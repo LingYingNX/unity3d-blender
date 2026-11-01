@@ -258,7 +258,7 @@ class UNITYPY_OT_import_zipmod(bpy.types.Operator, ImportHelper):
             return candidates[0]
 
         def find_declared_node(declared, own):
-            """声明的父节点：先当骨名找骨架，再当对象名找 N_* 挂点空物体。"""
+            """声明的父节点：先当骨名找骨架，再当对象名找 N_* 挂点空物体，最后按挂点表映射到骨。"""
             if not declared or declared in own:
                 return None
             for object_ in bpy.data.objects:
@@ -278,6 +278,13 @@ class UNITYPY_OT_import_zipmod(bpy.types.Operator, ImportHelper):
                 and node.matrix_world.translation.length > threshold
             ):
                 return node, None
+            # 挂点在包里只有贴地占位点时，按 HS2 的挂点表映射到角色骨（N_Head → cf_J_Head_s）。
+            if rig is not None:
+                mapped = unity_loader.resolve_node_bone(
+                    declared, {bone.name for bone in rig.data.bones}
+                )
+                if mapped:
+                    return rig, mapped
             return None
 
         skipped = []

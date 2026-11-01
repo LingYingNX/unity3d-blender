@@ -278,3 +278,53 @@ def bundle_role(entries: dict | None) -> str:
     if categories & _CLOTHING_CATEGORIES:
         return "clothing"
     return "unknown"
+
+
+# HS2/KK 的挂点（N_*，存在角色卡里、包里只有贴地占位点）对应到实际骨骼的候选链。
+# 顺序即优先级，运行时按骨架里真实存在的骨挑第一个；表中没有的挂点会退回头骨。
+_NODE_BONE_CANDIDATES = {
+    "N_Head": ("cf_J_Head_s", "cf_J_Head"),
+    "N_Hair": ("cf_J_Head_s", "cf_J_Head"),
+    "N_Earring_L": ("cf_J_Head_s", "cf_J_Head"),
+    "N_Earring_R": ("cf_J_Head_s", "cf_J_Head"),
+    "N_Face": ("cf_J_Head_s", "cf_J_Head"),
+    "N_Neck": ("cf_J_Neck", "cf_J_Head_s"),
+    "N_Chest": ("cf_J_Spine02_s", "cf_J_Spine01_s"),
+    "N_Mune_L": ("cf_J_Mune00_s_L", "cf_J_Spine02_s"),
+    "N_Mune_R": ("cf_J_Mune00_s_R", "cf_J_Spine02_s"),
+    "N_Back": ("cf_J_Spine02_s", "cf_J_Spine01_s"),
+    "N_Waist": ("cf_J_Kosi01_s", "cf_J_Hips"),
+    "N_Kosi01": ("cf_J_Kosi01_s", "cf_J_Hips"),
+    "N_Kosi02": ("cf_J_Kosi02_s", "cf_J_Kosi01_s", "cf_J_Hips"),
+    "N_Hip": ("cf_J_Hips", "cf_J_Kosi01_s"),
+    "N_Arm_L": ("cf_J_ArmLow02_s_L", "cf_J_ArmLow01_s_L"),
+    "N_Arm_R": ("cf_J_ArmLow02_s_R", "cf_J_ArmLow01_s_R"),
+    "N_Elbo_L": ("cf_J_ArmElbo_low_s_L", "cf_J_ArmElboura_s_L"),
+    "N_Elbo_R": ("cf_J_ArmElbo_low_s_R", "cf_J_ArmElboura_s_R"),
+    "N_Hand_L": ("cf_J_Hand_Wrist_s_L", "cf_J_Hand_L"),
+    "N_Hand_R": ("cf_J_Hand_Wrist_s_R", "cf_J_Hand_R"),
+    "N_Leg_L": ("cf_J_LegLow01_s_L", "cf_J_LegUp01_s_L"),
+    "N_Leg_R": ("cf_J_LegLow01_s_R", "cf_J_LegUp01_s_R"),
+    "N_Ankle_L": ("cf_J_Ankle_L", "cf_J_Foot_L", "cf_J_Toes01_L", "cf_J_LegLow02_s_L"),
+    "N_Ankle_R": ("cf_J_Ankle_R", "cf_J_Foot_R", "cf_J_Toes01_R", "cf_J_LegLow02_s_R"),
+    "N_Foot_L": ("cf_J_Foot_L", "cf_J_Foot01_L", "cf_J_Ankle_L", "cf_J_Toes01_L"),
+    "N_Foot_R": ("cf_J_Foot_R", "cf_J_Foot01_R", "cf_J_Ankle_R", "cf_J_Toes01_R"),
+    "N_Toes_L": ("cf_J_Toes01_L", "cf_J_Foot_L"),
+    "N_Toes_R": ("cf_J_Toes01_R", "cf_J_Foot_R"),
+}
+
+
+def resolve_node_bone(declared: str, bone_names) -> str | None:
+    """把 characustom 里的挂点名（N_Head、N_Earring_L…）解析成骨架里真实存在的骨名。"""
+    if not declared:
+        return None
+    if declared in bone_names:
+        return declared
+    for candidate in _NODE_BONE_CANDIDATES.get(declared, ()):
+        if candidate in bone_names:
+            return candidate
+    stripped = declared[2:] if declared.startswith("N_") else declared
+    for candidate in bone_names:
+        if stripped and stripped in candidate:
+            return candidate
+    return None

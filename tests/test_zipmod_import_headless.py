@@ -18,6 +18,7 @@ sys.path.insert(0, str(ROOT / "blender_addon"))
 
 import bpy  # noqa: E402
 from mathutils import Matrix, Vector  # noqa: E402
+from unity3d_assetbundle_importer.unitypy_importer import unity_loader  # noqa: E402
 
 GAME_MODS = Path(r"F:\HY\HS22\HoneySelect2_ArcticFox\mods")
 ARCHIVE = GAME_MODS / "[YYG]-孙尚香 自由礼赞.zipmod"
@@ -274,15 +275,19 @@ def main() -> int:
         )
         print("    整包导入后挂到骨骼:", attached)
         check(
-            attached == ["[YYG]ZYLZTF"],
-            "只挂头发；饰品留在主体坐标里（实际 {0}）".format(attached),
+            attached == ["[YYG]ZYLZSP", "[YYG]ZYLZTF"],
+            "头发和饰品都挂上（饰品的 N_Earring_L 由挂点表映射到头骨）（实际 {0}）".format(attached),
         )
         sp_collection = bpy.data.collections.get("[YYG]ZYLZSP")
-        sp_root = bpy.data.objects.get("[YYG]ZYLZSP")
+        sp_roots = [
+            object_
+            for object_ in (sp_collection.all_objects if sp_collection else [])
+            if object_.type == "EMPTY" and object_.parent_type == "BONE"
+        ]
         check(
-            sp_root is not None and sp_root.parent_type != "BONE",
-            "饰品没有被挂到骨上（实际 {0}）".format(
-                sp_root.parent_bone if sp_root and sp_root.parent_type == "BONE" else None
+            len(sp_roots) == 1 and sp_roots[0].parent_bone.startswith("cf_J_Head"),
+            "饰品落到头骨（实际 {0}）".format(
+                [(object_.name, object_.parent_bone) for object_ in sp_roots]
             ),
         )
         hair_collection = bpy.data.collections.get("[YYG]ZYLZTF")
@@ -370,8 +375,8 @@ def main() -> int:
             )
             print("    挂到骨骼的 bundle:", attached)
             check(
-                attached == ["[YYG]ZYLZTF"],
-                "整包只挂头发（实际 {0}）".format(attached),
+                attached == ["[YYG]ZYLZSP", "[YYG]ZYLZTF"],
+                "整包挂上头发与饰品（实际 {0}）".format(attached),
             )
 
     # 8) 有身体包时，饰品按 csv 声明的 N_* 挂点精确落位
@@ -394,9 +399,8 @@ def main() -> int:
                 ),
             )
             check(
-                sp_root is not None
-                and not (sp_root.parent_type == "BONE"),
-                "占位节点被识别，饰品保持自身坐标（实际父级 {0}）".format(
+                sp_root is not None and sp_root.parent_type == "BONE",
+                "占位节点被拒绝，饰品按挂点表落到骨上（实际父级 {0}）".format(
                     sp_root.parent.name if sp_root and sp_root.parent else None
                 ),
             )
@@ -410,10 +414,8 @@ def main() -> int:
                 ]
                 print("    饰品 z 范围: {0:.2f} ~ {1:.2f}".format(min(zs), max(zs)))
                 check(
-                    -2.0 < min(zs) < 1.0,
-                    "饰品留在主体坐标（脚部附近，实际 {0:.2f} ~ {1:.2f}）".format(
-                        min(zs), max(zs)
-                    ),
+                    min(zs) > 10.0,
+                    "饰品落在头附近而不是脚底（实际 {0:.2f} ~ {1:.2f}）".format(min(zs), max(zs)),
                 )
 
     # 9) 真挂点分支：把 N_Earring_L 挪离原点后，饰品要精确挂到它上面
@@ -470,6 +472,49 @@ def main() -> int:
         )
         print("    批量导入后骨架:", len(rigs), "挂到骨骼:", attached)
         check(attached == ["[YYG]ZYLZTF"], "批量导入时头发挂到同批导入的衣服骨上（实际 {0}）".format(attached))
+
+    # 11) 挂点表：知更鸟套装的饰品声明 N_Head，要落到头骨而不是留在脚底
+    check(
+        unity_loader.resolve_node_bone("N_Head", {"cf_J_Head_s", "cf_J_Hips"}) == "cf_J_Head_s",
+        "挂点表把 N_Head 映射到 cf_J_Head_s",
+    )
+    check(
+        unity_loader.resolve_node_bone("N_Foot_L", {"cf_J_Toes01_L"}) == "cf_J_Toes01_L",
+        "候选链在缺骨时退到下一档",
+    )
+    check(
+        unity_loader.resolve_node_bone("N_NotExist", {"cf_J_Head_s"}) is None,
+        "未知挂点不瞎猜",
+    )
+    reset_scene()
+    robin = Path(r"F:\HY\HS22\HoneySelect2_ArcticFox\mods\崩坏 星穹铁道 知更鸟")
+    clothes = robin / "1900sy.zipmod"
+    accessory = robin / "1902sp3.zipmod"
+    if check(clothes.exists() and accessory.exists(), "知更鸟固件存在（{0}）".format(robin.name)):
+        if check(import_path(clothes) == "FINISHED", "导入 1900sy（提供角色骨）"):
+            if check(import_path(accessory) == "FINISHED", "导入 1902sp3 饰品"):
+                model_root = next(
+                    (
+                        object_
+                        for object_ in bpy.data.objects
+                        if object_.name.startswith("1902sp3") and object_.parent_type == "BONE"
+                    ),
+                    None,
+                )
+                check(
+                    model_root is not None,
+                    "饰品挂到骨上（实际 {0}）".format(
+                        [(object_.name, object_.parent_type) for object_ in bpy.data.objects if object_.name.startswith("1902sp3")]
+                    ),
+                )
+                if model_root is not None:
+                    check(
+                        model_root.parent_bone.startswith("cf_J_Head"),
+                        "挂在头骨上（实际 {0}）".format(model_root.parent_bone),
+                    )
+                    height = model_root.matrix_world.translation.z
+                    print("    饰品原点高度: {0:.3f}".format(height))
+                    check(height > 10.0, "饰品离开脚底（z={0:.3f}）".format(height))
 
     failed = [message for ok, message in RESULTS if not ok]
     print("RESULT: {0} passed, {1} failed".format(len(RESULTS) - len(failed), len(failed)))
