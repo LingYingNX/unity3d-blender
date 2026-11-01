@@ -16,19 +16,6 @@ from bpy_extras.io_utils import ImportHelper
 from . import builder, unity_loader
 
 
-def _unique_name(pools: dict[str, set[str]], base: str, fallback: str = "object") -> str:
-    """在共享的名字池里取一个不重名的 Blender 物体名。"""
-    name = builder.sanitize(base, fallback)
-    used = pools.setdefault("object", set())
-    candidate = name
-    index = 1
-    while candidate in used:
-        index += 1
-        candidate = "{0}.{1:03d}".format(name, index)
-    used.add(candidate)
-    return candidate
-
-
 class UNITYPY_OT_import_zipmod(bpy.types.Operator, ImportHelper):
     bl_idname = "import_scene.zipmod"
     bl_label = "导入 Zipmod / Unity3D（UnityPy 直读）"
@@ -91,7 +78,7 @@ class UNITYPY_OT_import_zipmod(bpy.types.Operator, ImportHelper):
     )
     attach_offset: FloatVectorProperty(
         name="挂点偏移",
-        description="对齐后沿世界轴再加的偏移，用来微调",
+        description="对齐后沿世界轴再加的偏移，用来微调（单位是世界坐标，不受导入缩放影响）",
         size=3,
         subtype="TRANSLATION",
         default=(0.0, 0.0, 0.0),
@@ -121,7 +108,9 @@ class UNITYPY_OT_import_zipmod(bpy.types.Operator, ImportHelper):
         entries: dict[str, dict] = {}
         name_pools: dict[str, set[str]] = {}
         # 一个总根：整套 mod（主体 + 花、蝴蝶结这类配件）都挂在它下面，一起移动、一起缩放。
-        root = bpy.data.objects.new(_unique_name(name_pools, source.stem or "Zipmod", "root"), None)
+        root = bpy.data.objects.new(
+            builder.unique_name(name_pools, "object", source.stem or "Zipmod", "root"), None
+        )
         context.scene.collection.objects.link(root)
         root.scale = (options.unit_scale,) * 3
         try:
@@ -139,7 +128,9 @@ class UNITYPY_OT_import_zipmod(bpy.types.Operator, ImportHelper):
                         bundle_name
                     )
                     context.scene.collection.children.link(bundle_collection)
-                    bundle_root = bpy.data.objects.new(_unique_name(name_pools, bundle_name, "bundle"), None)
+                    bundle_root = bpy.data.objects.new(
+                        builder.unique_name(name_pools, "object", bundle_name, "bundle"), None
+                    )
                     bundle_collection.objects.link(bundle_root)
                     bundle_root.parent = root
                     bundles.append((bundle_collection, bundle_root))
@@ -239,13 +230,15 @@ class UNITYPY_OT_import_zipmod(bpy.types.Operator, ImportHelper):
                 if declared in {bone.name for bone in object_.data.bones}:
                     return object_, declared
             node = bpy.data.objects.get(declared)
-            # 身体包里的 N_* 是占位点（位置就是原点附近，实测 N_Earring_L 在 z=0.203 贴着地面），
-            # 真正的节点位置由游戏/角色卡给。拿占位点当挂点等于把饰品丢在地上，所以只认
-            # 明显离开原点的节点，其余交给头骨兜底（对耳朵这类节点，头骨的落点和游戏一致）。
+            # 身体包里的 N_* 是占位点（实测 N_Earring_L 在 z=0.203 贴着地面），真正的节点位置
+            # 由游戏/角色卡给。判定阈值跟角色骨架高度挂钩，不写死 1.0 这种魔法数。
+            rig = pick_rig(own)
+            height = max((bone.head_local.z for bone in rig.data.bones), default=0.0) if rig else 0.0
+            threshold = max(1.0, height * 0.15)
             if (
                 node is not None
                 and node.type == "EMPTY"
-                and node.matrix_world.translation.length > 1.0
+                and node.matrix_world.translation.length > threshold
             ):
                 return node, None
             return None

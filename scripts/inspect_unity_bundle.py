@@ -11,6 +11,7 @@ import sys
 from pathlib import Path
 
 import UnityPy
+from UnityPy.helpers.MeshHelper import MeshHandler
 
 
 def safe(label, fn):
@@ -25,6 +26,8 @@ def describe(obj, reader, limit):
     name = safe("name", lambda: reader.m_Name)
     print(f"  - {obj.type.name} name={name!r} path_id={obj.path_id}")
     if obj.type.name == "Mesh":
+        # UnityPy 的 Mesh 要先过 MeshHandler 才有顶点数组，否则只会打印一堆假错误。
+        safe("handler", lambda: MeshHandler(reader).process())
         verts = safe("m_VertexCount", lambda: len(reader.m_Vertices))
         print(f"    vertices={verts} submeshes={safe('sub', lambda: len(reader.m_SubMeshes))}")
         print(

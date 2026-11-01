@@ -44,6 +44,19 @@ def sanitize(name: str, fallback: str = "unnamed") -> str:
     return cleaned[:120] or fallback
 
 
+def unique_name(pools: dict[str, set[str]], kind: str, base: str, fallback: str = "unnamed") -> str:
+    """按类别在名字池里取一个不重名的 Blender 名（物体/材质/贴图/骨架各一池）。"""
+    name = sanitize(base, fallback)
+    used = pools.setdefault(kind, set())
+    candidate = name
+    index = 1
+    while candidate in used:
+        index += 1
+        candidate = "{0}.{1:03d}".format(name, index)
+    used.add(candidate)
+    return candidate
+
+
 def attach_object_to_target(object_, target, bone_name: str | None = None, offset=(0.0, 0.0, 0.0)):
     """把物体挂到角色骨或挂点节点上，让它的世界原点落在目标位置。
 
@@ -175,15 +188,7 @@ class BundleImporter:
     # ---------------------------------------------------------------- plumbing
 
     def _unique_name(self, kind: str, base: str) -> str:
-        name = sanitize(base, "object")
-        used = self._name_pools.setdefault(kind, set())
-        candidate = name
-        index = 1
-        while candidate in used:
-            index += 1
-            candidate = "{0}.{1:03d}".format(name, index)
-        used.add(candidate)
-        return candidate
+        return unique_name(self._name_pools, kind, base)
 
     def _deref(self, pptr):
         if pptr is None:
@@ -306,6 +311,8 @@ class BundleImporter:
             return self.parent
         if game_object_pid in self._go_empties:
             return self._go_empties[game_object_pid]
+        # shortcut: 缓存只按 path_id 做键，bundle 引用第二个资产文件（m_FileID != 0）时可能串号；
+        # 目前 HS2 的 mod 都是单文件包，遇到跨文件引用的包再补 (file_id, path_id) 键。
         if game_object_pid in self._go_stack:  # 数据成环时停止递归
             return self.parent
 
@@ -453,12 +460,24 @@ class BundleImporter:
         mesh.update()
 
         if len(mesh.polygons) != len(faces):
+            # validate() 删面时不保证删在末尾，按面回查它原本属于哪个子网格，避免材质整体错位。
+            slot_by_face: dict[tuple, int] = {}
+            for slot, face in zip(face_slots, faces):
+                slot_by_face.setdefault(tuple(face), slot)
+                slot_by_face.setdefault(tuple(sorted(face)), slot)
+            resolved: list[int] = []
+            for polygon in mesh.polygons:
+                vertices = tuple(polygon.vertices)
+                slot = slot_by_face.get(vertices)
+                if slot is None:
+                    slot = slot_by_face.get(tuple(sorted(vertices)), 0)
+                resolved.append(slot)
+            face_slots = resolved
             self.report.warnings.append(
                 "{0}: Blender dropped {1} polygon(s) during validation".format(
                     object_name, len(faces) - len(mesh.polygons)
                 )
             )
-            face_slots = face_slots[: len(mesh.polygons)]
 
         if has_uv and len(mesh.loops) == len(loop_uv):
             uv_layer = mesh.uv_layers.new(name="UVMap")
@@ -510,6 +529,13 @@ class BundleImporter:
         if not materials:
             return
         limit = len(materials) - 1
+        missing = sorted({slot for slot in face_slots if slot > limit})
+        if missing:
+            self.report.warnings.append(
+                "{0}: 子网格 {1} 没有对应材质，这些面暂时用最后一个材质".format(
+                    object_.name, missing
+                )
+            )
         object_.data.polygons.foreach_set(
             "material_index", [min(slot, limit) for slot in face_slots]
         )
@@ -619,8 +645,10 @@ class BundleImporter:
 
         directory = Path(self.options.texture_dir)
         directory.mkdir(parents=True, exist_ok=True)
-        path = directory / "{0}_{1}.png".format(
-            sanitize(unity_texture.m_Name or "texture"), key[1]
+        # 带上 bundle 标识：贴图名和 path_id 只在单个 bundle 内唯一，只有它们会跨 mod 撞车。
+        bundle_token = sanitize(Path(self.ref.display).stem, "bundle")
+        path = directory / "{0}_{1}_{2}.png".format(
+            bundle_token, sanitize(unity_texture.m_Name or "texture"), key[1]
         )
         image_data.convert("RGBA").save(path)
 
@@ -792,7 +820,11 @@ class BundleImporter:
         for index, (pointer, _transform) in enumerate(request.bones):
             name = self._bone_names.get(pointer.m_PathID)
             if name:
-                groups[index] = request.object.vertex_groups.new(name=name)
+                # 合并过的重复骨可能同名：先找已有组，避免 Blender 生成 .001 把权重劈开。
+                groups[index] = (
+                    request.object.vertex_groups.get(name)
+                    or request.object.vertex_groups.new(name=name)
+                )
         if not groups:
             return
 

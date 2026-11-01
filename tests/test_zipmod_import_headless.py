@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "blender_addon"))
 
 import bpy  # noqa: E402
-from mathutils import Vector  # noqa: E402
+from mathutils import Matrix, Vector  # noqa: E402
 
 GAME_MODS = Path(r"F:\HY\HS22\HoneySelect2_ArcticFox\mods")
 ARCHIVE = GAME_MODS / "[YYG]-孙尚香 自由礼赞.zipmod"
@@ -201,7 +201,8 @@ def main() -> int:
     single = ensure_fixtures()
     if not check(single is not None, "拿到固件（{0}）".format(ARCHIVE.name)):
         print("SKIP: 游戏目录里没有固件 zipmod")
-        return 0
+        print("RESULT: 0 passed, 1 failed (fixture missing)")
+        return 2
 
     # 1) 单个 AssetBundle：几何、材质、贴图、骨架
     reset_scene()
@@ -414,6 +415,31 @@ def main() -> int:
                         min(zs), max(zs)
                     ),
                 )
+
+    # 9) 真挂点分支：把 N_Earring_L 挪离原点后，饰品要精确挂到它上面
+    reset_scene()
+    if check(import_path(body) == "FINISHED", "真挂点测试：导入身体包"):
+        node = bpy.data.objects.get("N_Earring_L")
+        if check(node is not None, "拿到 N_Earring_L 空物体"):
+            node.matrix_basis = Matrix.Translation(Vector((0.0, 0.0, 16.0)))
+            bpy.context.view_layer.update()
+            node_position = node.matrix_world.translation.copy()
+            if check(import_path(ARCHIVE) == "FINISHED", "真挂点测试：再导入整包 zipmod"):
+                sp_root = bpy.data.objects.get("[YYG]ZYLZSP")
+                check(
+                    sp_root is not None and sp_root.parent is node,
+                    "饰品挂到挪动后的挂点上（实际 {0}）".format(
+                        sp_root.parent.name if sp_root and sp_root.parent else None
+                    ),
+                )
+                if sp_root is not None and sp_root.parent is node:
+                    check(
+                        sp_root.parent_type == "OBJECT",
+                        "挂点用对象父级（实际 {0}）".format(sp_root.parent_type),
+                    )
+                    delta = (sp_root.matrix_world.translation - node_position).length
+                    print("    真挂点落点误差: {0:.4f}".format(delta))
+                    check(delta < 0.01, "落点误差小于 0.01（实际 {0:.4f}）".format(delta))
 
     failed = [message for ok, message in RESULTS if not ok]
     print("RESULT: {0} passed, {1} failed".format(len(RESULTS) - len(failed), len(failed)))

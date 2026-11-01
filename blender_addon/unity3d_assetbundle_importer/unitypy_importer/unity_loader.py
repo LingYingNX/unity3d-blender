@@ -51,18 +51,6 @@ def import_unitypy(extra_search_path: str = ""):
     return UnityPy
 
 
-def probe_unitypy(extra_search_path: str = "") -> tuple[bool, str]:
-    """Return (available, message) without raising, for UI display."""
-    try:
-        module = import_unitypy(extra_search_path)
-    except UnityPyMissing as exc:
-        return False, str(exc)
-    except Exception as exc:  # noqa: BLE001 - UI must never crash
-        return False, "{0}: {1}".format(type(exc).__name__, exc)
-    version = getattr(module, "__version__", None) or getattr(module, "__VERSION__", "unknown")
-    return True, "UnityPy {0} loaded from {1}".format(version, Path(module.__file__).parent)
-
-
 @dataclass(frozen=True)
 class BundleRef:
     """One AssetBundle file that UnityPy can open."""
@@ -107,6 +95,7 @@ def _safe_relative(name: str) -> str | None:
 
 
 def _extract_archive(archive: Path, result: BundleSet, extract_root: Path | None) -> None:
+    max_bytes = 8 * 1024 * 1024 * 1024  # shortcut: 单包解包上限 8 GiB，超过就拒绝
     if extract_root is None:
         target = Path(tempfile.mkdtemp(prefix="zipmod_import_"))
     else:
@@ -121,6 +110,27 @@ def _extract_archive(archive: Path, result: BundleSet, extract_root: Path | None
         raise ValueError("{0} is not a readable zip archive: {1}".format(archive.name, exc)) from exc
 
     with handle:
+        wanted = [
+            member
+            for member in handle.infolist()
+            if not member.is_dir()
+            and PurePosixPath(_safe_relative(member.filename) or "").suffix.lower()
+            in BUNDLE_SUFFIXES + (".csv",)
+        ]
+        total = sum(member.file_size for member in wanted)
+        if total > max_bytes:
+            raise ValueError(
+                "{0} 解包后约 {1:.1f} GiB，超过 {2:.0f} GiB 上限，已拒绝".format(
+                    archive.name, total / (1024 ** 3), max_bytes / (1024 ** 3)
+                )
+            )
+        free = shutil.disk_usage(target).free
+        if total > free:
+            raise ValueError(
+                "{0} 解包需要 {1:.1f} GiB，超过剩余空间 {2:.1f} GiB".format(
+                    archive.name, total / (1024 ** 3), free / (1024 ** 3)
+                )
+            )
         for member in handle.infolist():
             if member.is_dir():
                 continue
