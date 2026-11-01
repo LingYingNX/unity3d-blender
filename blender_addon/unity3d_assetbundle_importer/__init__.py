@@ -8,7 +8,7 @@
 bl_info = {
     "name": "Unity3D资源包导入器",
     "author": "Local",
-    "version": (0, 5, 0),
+    "version": (0, 3, 0),
     "blender": (4, 0, 0),
     "location": "文件 > 导入 > Zipmod / Unity3D（UnityPy 直读）",
     "description": "用 UnityPy 直接读取 .zipmod / .unity3d，导入网格、材质、贴图与合并骨架蒙皮。",
