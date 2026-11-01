@@ -44,31 +44,37 @@ def sanitize(name: str, fallback: str = "unnamed") -> str:
     return cleaned[:120] or fallback
 
 
-def attach_object_to_bone(object_, armature, bone_name: str, offset=(0.0, 0.0, 0.0)):
-    """把物体用骨骼父级挂到指定骨骼，并让它的世界原点落在骨骼头部。
+def attach_object_to_target(object_, target, bone_name: str | None = None, offset=(0.0, 0.0, 0.0)):
+    """把物体挂到角色骨或挂点节点上，让它的世界原点落在目标位置。
 
-    局部坐标的模型（HS2 的头发、饰品）在游戏里就是靠这种方式贴到角色骨上的：bundle
-    自己只带相对坐标，父变换来自角色。Blender 骨骼父级的父空间原点在骨骼尾端，各版本
-    约定可能变，所以这里先把父级矩阵实测出来，再反推 matrix_basis，不靠内部约定。
+    局部坐标的模型（HS2 的头发、饰品）在游戏里就是靠这种方式贴到角色上的：bundle 自己
+    只带相对坐标，父变换来自角色。目标是骨架 + 骨名时用骨骼父级（Blender 骨骼父级的
+    父空间原点在骨骼尾端），目标是空物体（HS2 的 N_* 挂点）时用对象父级。两种都不假设
+    父空间约定：先实测父级矩阵，再反推 matrix_basis。
     """
-    bone = armature.data.bones.get(bone_name)
-    if bone is None:
-        raise ValueError("骨架 {0} 里没有骨骼 {1}".format(armature.name, bone_name))
-
     scale = object_.scale.copy()
-    object_.parent = armature
-    object_.parent_type = "BONE"
-    object_.parent_bone = bone_name
     object_.matrix_parent_inverse = Matrix.Identity(4)
     object_.matrix_basis = Matrix.Identity(4)
+    if bone_name:
+        bone = target.data.bones.get(bone_name)
+        if bone is None:
+            raise ValueError("骨架 {0} 里没有骨骼 {1}".format(target.name, bone_name))
+        object_.parent = target
+        object_.parent_type = "BONE"
+        object_.parent_bone = bone_name
+        offset_position = target.matrix_world @ bone.head_local
+    else:
+        object_.parent = target
+        object_.parent_type = "OBJECT"
+        offset_position = target.matrix_world.translation
+
     bpy.context.view_layer.update()
     parent_matrix = object_.matrix_world.copy()
-
-    target = (armature.matrix_world @ bone.head_local) + Vector(offset)
-    wanted = Matrix.Translation(target) @ Matrix.Diagonal(scale).to_4x4()
+    target_position = offset_position + Vector(offset)
+    wanted = Matrix.Translation(target_position) @ Matrix.Diagonal(scale).to_4x4()
     object_.matrix_basis = parent_matrix.inverted() @ wanted
     bpy.context.view_layer.update()
-    return target
+    return target_position
 
 
 @dataclass
@@ -355,6 +361,8 @@ class BundleImporter:
             if request is not None:
                 pending.append(request)
 
+        self._import_attach_nodes()
+
         if pending and self.options.import_armatures:
             try:
                 self._build_armature(pending)
@@ -372,6 +380,19 @@ class BundleImporter:
                         )
         self.report.seconds = time.perf_counter() - started
         return self.report
+
+    def _import_attach_nodes(self) -> None:
+        """把 HS2 的 N_* 挂点节点（N_Head、N_Earring_L…）也建成空物体。
+
+        这些节点只有 Transform、没有渲染器，所以不在渲染器祖先链里；可是饰品就是挂到它们
+        上面的。不建出来，饰品就只能靠头骨近似。读一遍 GameObject 名字很便宜（几千个约
+        0.01 秒），所以整包扫一遍。
+        """
+        for entry in self.environment.objects:
+            if entry.type.name != "GameObject":
+                continue
+            if self._game_object_name(entry.path_id).startswith("N_"):
+                self._ensure_game_object_empty(entry.path_id)
 
     # -------------------------------------------------------------- renderers
 

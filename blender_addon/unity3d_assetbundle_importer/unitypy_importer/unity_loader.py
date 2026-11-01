@@ -178,6 +178,7 @@ def collect_bundles(source: Path | str, extract_root: Path | str | None = None) 
         _extract_archive(source, result, Path(extract_root) if extract_root else None)
     elif suffix in BUNDLE_SUFFIXES:
         result.bundles.append(BundleRef(path=source, display=source.name))
+        result.characustom.extend(_find_characustom(source.parent))
     else:
         raise ValueError(
             "Unsupported file type '{0}'. Expected one of {1} or {2}".format(
@@ -187,6 +188,15 @@ def collect_bundles(source: Path | str, extract_root: Path | str | None = None) 
             )
         )
     return result
+
+
+def _find_characustom(start: Path) -> list[Path]:
+    """散装安装的单个 bundle，向上几层找 `list/characustom` 登记表。"""
+    for parent in list(start.parents)[:4]:
+        folder = parent / "list" / "characustom"
+        if folder.is_dir():
+            return sorted(folder.glob("*.csv"))
+    return []
 
 
 _CLOTHING_CATEGORIES = {

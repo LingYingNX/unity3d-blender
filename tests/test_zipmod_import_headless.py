@@ -52,7 +52,9 @@ def ensure_fixtures() -> Path | None:
     with zipfile.ZipFile(ARCHIVE) as handle:
         for member in handle.infolist():
             name = member.filename.replace("\\", "/")
-            if not name.startswith("abdata/chara/YYG/") or not name.endswith(".unity3d"):
+            wanted = name.endswith(".unity3d") and name.startswith("abdata/chara/YYG/")
+            wanted = wanted or (name.endswith(".csv") and "/characustom/" in name)
+            if not wanted:
                 continue
             output = FIXTURE_DIR.joinpath(*name.split("/"))
             output.parent.mkdir(parents=True, exist_ok=True)
@@ -270,8 +272,8 @@ def main() -> int:
         )
         print("    整包导入后挂到骨骼:", attached)
         check(
-            attached == ["[YYG]ZYLZTF"],
-            "只挂头发；饰品因声明的父节点缺失不挂（实际 {0}）".format(attached),
+            attached == ["[YYG]ZYLZSP", "[YYG]ZYLZTF"],
+            "没有身体包时头发与饰品都挂（饰品按头骨粗略放置）（实际 {0}）".format(attached),
         )
         hair_collection = bpy.data.collections.get("[YYG]ZYLZTF")
         hair_meshes = [
@@ -358,9 +360,45 @@ def main() -> int:
             )
             print("    挂到骨骼的 bundle:", attached)
             check(
-                attached == ["[YYG]ZYLZTF"],
-                "整包只挂头发，饰品按声明跳过（实际 {0}）".format(attached),
+                attached == ["[YYG]ZYLZSP", "[YYG]ZYLZTF"],
+                "整包挂上头发与饰品（实际 {0}）".format(attached),
             )
+
+    # 8) 有身体包时，饰品按 csv 声明的 N_* 挂点精确落位
+    reset_scene()
+    body = Path(r"F:\HY\HS22\HoneySelect2_ArcticFox\abdata\chara\oo_base.unity3d")
+    if check(body.exists(), "身体固件存在") and check(import_path(body) == "FINISHED", "导入身体包"):
+        node = bpy.data.objects.get("N_Earring_L")
+        node_count = len(
+            [object_ for object_ in bpy.data.objects if object_.type == "EMPTY" and object_.name.startswith("N_")]
+        )
+        check(node is not None, "身体包里的 N_* 挂点建出来了（实际 {0} 个）".format(node_count))
+        if check(import_path(ARCHIVE) == "FINISHED", "再导入整包 zipmod"):
+            sp_root = bpy.data.objects.get("[YYG]ZYLZSP")
+            check(
+                sp_root is not None
+                and node is not None
+                and node.matrix_world.translation.length < 1.0,
+                "身体包里的 N_Earring_L 是贴地占位点（z={0:.3f}）".format(
+                    node.matrix_world.translation.z if node else -1.0
+                ),
+            )
+            check(
+                sp_root is not None
+                and sp_root.parent is not None
+                and sp_root.parent.type == "ARMATURE",
+                "占位节点被识别，饰品退回角色骨（实际父级 {0}）".format(
+                    sp_root.parent.name if sp_root and sp_root.parent else None
+                ),
+            )
+            if sp_root is not None and sp_root.parent is not None:
+                check(
+                    sp_root.parent_type == "BONE" and sp_root.parent_bone == "cf_J_Head",
+                    "退回头骨（实际 {0}/{1}）".format(sp_root.parent_type, sp_root.parent_bone),
+                )
+                height = sp_root.matrix_world.translation.z
+                print("    饰品原点高度: {0:.3f}".format(height))
+                check(height > 10.0, "饰品落在上半身而不是地面（z={0:.3f}）".format(height))
 
     failed = [message for ok, message in RESULTS if not ok]
     print("RESULT: {0} passed, {1} failed".format(len(RESULTS) - len(failed), len(failed)))

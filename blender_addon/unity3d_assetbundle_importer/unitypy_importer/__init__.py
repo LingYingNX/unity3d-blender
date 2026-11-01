@@ -182,15 +182,23 @@ class UNITYPY_OT_import_zipmod(bpy.types.Operator, ImportHelper):
         return {"FINISHED"}
 
     def _attach_to_character_bone(self, context, bundles, importers, entries):
-        """按登记表把局部坐标的 bundle 挂到角色骨上。
+        """按登记表把局部坐标的 bundle 挂到角色的骨骼或挂点节点上。
 
         zipmod 里的 `abdata/list/characustom/*.csv` 才是真正的登记表：头发一行带 SetHair，
-        挂头骨；饰品一行带 Parent，挂它声明的那根节点；衣服靠角色骨架自己定位，不挂。
-        没有登记信息的 bundle 退回启发式：自带 cf_J_ 骨的不挂，其余按局部坐标挂头骨。
+        挂头骨；饰品一行带 Parent，挂它声明的那根节点（可能是骨骼，也可能是 HS2 的 N_*
+        挂点空物体）；衣服靠角色骨架自己定位，不挂。声明的节点找不到时按头骨粗略放置并
+        提示，不会默默丢在原点。
         """
         if self.attach_mode == "NONE":
             return
         wanted_names = [self.target_bone, "cf_J_Head", "cf_J_Head_s"]
+
+        def head_bone_name(armature):
+            names = {bone.name for bone in armature.data.bones}
+            for name in wanted_names:
+                if name and name in names:
+                    return name
+            return next((name for name in sorted(names) if name.startswith("cf_J_Head")), None)
 
         def match_rank(item):
             names = {bone.name for bone in item.data.bones}
@@ -204,9 +212,7 @@ class UNITYPY_OT_import_zipmod(bpy.types.Operator, ImportHelper):
                 bone.name.startswith("cf_J_") for bone in object_.data.bones
             )
 
-        def pick_rig(bundle_collection):
-            """找角色骨架：同一次导入里其它 bundle 建的也算，只排除自己 bundle 里的。"""
-            own = {object_.name for object_ in bundle_collection.all_objects}
+        def pick_rig(own):
             candidates = [
                 object_
                 for object_ in bpy.data.objects
@@ -219,6 +225,27 @@ class UNITYPY_OT_import_zipmod(bpy.types.Operator, ImportHelper):
             candidates.sort(key=match_rank)
             return candidates[0]
 
+        def find_declared_node(declared, own):
+            """声明的父节点：先当骨名找骨架，再当对象名找 N_* 挂点空物体。"""
+            if not declared or declared in own:
+                return None
+            for object_ in bpy.data.objects:
+                if object_.type != "ARMATURE":
+                    continue
+                if declared in {bone.name for bone in object_.data.bones}:
+                    return object_, declared
+            node = bpy.data.objects.get(declared)
+            # 身体包里的 N_* 是占位点（位置就是原点附近，实测 N_Earring_L 在 z=0.203 贴着地面），
+            # 真正的节点位置由游戏/角色卡给。拿占位点当挂点等于把饰品丢在地上，所以只认
+            # 明显离开原点的节点，其余交给头骨兜底（对耳朵这类节点，头骨的落点和游戏一致）。
+            if (
+                node is not None
+                and node.type == "EMPTY"
+                and node.matrix_world.translation.length > 1.0
+            ):
+                return node, None
+            return None
+
         skipped = []
         for (bundle_collection, bundle_root), importer in zip(bundles, importers):
             if not importer.report.objects:
@@ -227,44 +254,39 @@ class UNITYPY_OT_import_zipmod(bpy.types.Operator, ImportHelper):
             role = unity_loader.bundle_role(entry)
             if role == "clothing":
                 continue  # 衣服本来就长在角色骨架上，不用挂
+            own = {object_.name for object_ in bundle_collection.all_objects}
             if role == "unknown":
-                has_character_bones = any(
+                if any(
                     object_.type == "ARMATURE"
                     and any(bone.name.startswith("cf_J_") for bone in object_.data.bones)
                     for object_ in bundle_collection.objects
-                )
-                if has_character_bones:
+                ):
                     continue
                 role = "hair"  # 没有登记信息、也不是角色骨架：按局部坐标处理
 
-            rig = pick_rig(bundle_collection)
-            if rig is None:
-                skipped.append("{0}（没有可挂的角色骨架）".format(bundle_root.name))
-                continue
-            names = {bone.name for bone in rig.data.bones}
+            note = ""
+            target = None
             if role == "accessory":
                 declared = (entry or {}).get("parent")
-                if not declared or declared not in names:
-                    skipped.append(
-                        "{0}（饰品声明的父节点 {1} 不在骨架里，需要手动指定目标骨骼）".format(
-                            bundle_root.name, declared or "未声明"
-                        )
+                target = find_declared_node(declared, own)
+                if target is None:
+                    note = "（声明的父节点 {0} 不在场景里，按头骨粗略放置）".format(
+                        declared or "未声明"
                     )
+            if target is None:
+                rig = pick_rig(own)
+                if rig is None:
+                    skipped.append("{0}（没有可挂的角色骨架）".format(bundle_root.name))
                     continue
-                bone_name = declared
-            else:
-                bone_name = next((name for name in wanted_names if name and name in names), None)
-                if bone_name is None:
-                    bone_name = next(
-                        (name for name in sorted(names) if name.startswith("cf_J_Head")), None
-                    )
+                bone_name = head_bone_name(rig)
                 if bone_name is None:
                     skipped.append("{0}（{1} 里没有头骨）".format(bundle_root.name, rig.name))
                     continue
+                target = (rig, bone_name)
 
             try:
-                target = builder.attach_object_to_bone(
-                    bundle_root, rig, bone_name, tuple(self.attach_offset)
+                position = builder.attach_object_to_target(
+                    bundle_root, target[0], target[1], tuple(self.attach_offset)
                 )
             except Exception as exc:  # noqa: BLE001 - 挂载失败不能丢掉已经导入的模型
                 skipped.append(
@@ -275,12 +297,13 @@ class UNITYPY_OT_import_zipmod(bpy.types.Operator, ImportHelper):
                 continue
             self.report(
                 {"INFO"},
-                "{0}（{1}）已挂到角色骨骼 {2}/{3}，世界原点 {4}".format(
+                "{0}（{1}）已挂到 {2}{3}{4}，世界原点 {5}".format(
                     bundle_root.name,
                     role,
-                    rig.name,
-                    bone_name,
-                    tuple(round(v, 3) for v in target),
+                    target[0].name,
+                    "/" + target[1] if target[1] else "",
+                    note,
+                    tuple(round(v, 3) for v in position),
                 ),
             )
         if skipped:
