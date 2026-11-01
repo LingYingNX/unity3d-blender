@@ -10,6 +10,7 @@ import shutil
 import sys
 import tempfile
 import zipfile
+import csv
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 
@@ -76,6 +77,7 @@ class BundleSet:
     """Discovered bundles plus the temporary folders that back them."""
 
     bundles: list[BundleRef] = field(default_factory=list)
+    characustom: list[Path] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     _temp_dirs: list[Path] = field(default_factory=list)
 
@@ -126,13 +128,21 @@ def _extract_archive(archive: Path, result: BundleSet, extract_root: Path | None
             if relative is None:
                 result.warnings.append("Skipped unsafe archive path: {0}".format(member.filename))
                 continue
-            if PurePosixPath(relative).suffix.lower() not in BUNDLE_SUFFIXES:
+            member_path = PurePosixPath(relative)
+            is_bundle = member_path.suffix.lower() in BUNDLE_SUFFIXES
+            is_list = member_path.suffix.lower() == ".csv" and "characustom" in member_path.parts
+            if not (is_bundle or is_list):
                 continue
-            output = target.joinpath(*PurePosixPath(relative).parts)
+            output = target.joinpath(*member_path.parts)
             output.parent.mkdir(parents=True, exist_ok=True)
             with handle.open(member) as source, open(output, "wb") as destination:
                 shutil.copyfileobj(source, destination, 1 << 20)
-            result.bundles.append(BundleRef(path=output, display=relative, container=archive.name))
+            if is_bundle:
+                result.bundles.append(
+                    BundleRef(path=output, display=relative, container=archive.name)
+                )
+            else:
+                result.characustom.append(output)
 
     if not result.bundles:
         result.warnings.append(
@@ -153,6 +163,12 @@ def collect_bundles(source: Path | str, extract_root: Path | str | None = None) 
                 result.bundles.append(
                     BundleRef(path=candidate, display=candidate.relative_to(source).as_posix())
                 )
+            elif (
+                candidate.is_file()
+                and candidate.suffix.lower() == ".csv"
+                and "characustom" in candidate.parts
+            ):
+                result.characustom.append(candidate)
         if not result.bundles:
             result.warnings.append("No AssetBundle file found under {0}".format(source))
         return result
@@ -171,3 +187,74 @@ def collect_bundles(source: Path | str, extract_root: Path | str | None = None) 
             )
         )
     return result
+
+
+_CLOTHING_CATEGORIES = {
+    "top",
+    "bot",
+    "bra",
+    "under",
+    "gloves",
+    "shoes",
+    "socks",
+}
+
+
+def bundle_key(path: str) -> str:
+    """把 csv 里的 MainAB 或 bundle 的相对路径归一成同一个 key。"""
+    name = path.replace("\\", "/").strip().lower()
+    if name.startswith("abdata/"):
+        name = name[len("abdata/") :]
+    return name
+
+
+def read_characustom(paths) -> dict[str, dict]:
+    """读 characustom 列表，得出每个 bundle 的分类与声明的父节点。
+
+    zipmod 的 `abdata/list/characustom/*.csv` 是游戏真正的登记表：头发一行带 SetHair，
+    饰品一行带 Parent（该挂到角色哪个节点），衣服一行则靠角色骨架自己定位。
+    """
+    result: dict[str, dict] = {}
+    for path in paths:
+        try:
+            handle = open(path, "r", encoding="utf-8-sig", errors="replace", newline="")
+        except OSError:
+            continue
+        with handle:
+            rows = list(csv.reader(handle))
+        header_index = next(
+            (index for index, row in enumerate(rows) if row and row[0].strip() == "ID"), None
+        )
+        if header_index is None:
+            continue
+        header = [cell.strip() for cell in rows[header_index]]
+        category = path.stem.strip(" -").lower()
+        for row in rows[header_index + 1:]:
+            if not row or not row[0].strip():
+                continue
+            record = dict(zip(header, row))
+            main_ab = (record.get("MainAB") or "").strip()
+            if not main_ab:
+                continue
+            entry = result.setdefault(bundle_key(main_ab), {})
+            entry.setdefault("categories", set()).add(category)
+            if (record.get("SetHair") or "").strip():
+                entry["hair"] = True
+            parent = (record.get("Parent") or "").strip()
+            if parent:
+                entry["parent"] = parent
+    return result
+
+
+def bundle_role(entries: dict | None) -> str:
+    """按登记表给 bundle 分类：hair / accessory / clothing / unknown。"""
+    if not entries:
+        return "unknown"
+    if entries.get("hair"):
+        return "hair"
+    categories = entries.get("categories") or set()
+    if entries.get("parent"):
+        return "accessory"
+    if categories & _CLOTHING_CATEGORIES:
+        return "clothing"
+    return "unknown"

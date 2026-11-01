@@ -274,6 +274,21 @@ class BundleImporter:
             return Matrix.Identity(4)
         return self._local_matrix(transform)
 
+    def _bone_object_name(self, transform_pid: int) -> str:
+        """骨骼（Transform）对应 GameObject 的名字，也就是骨架里显示的骨名。"""
+        transform = self._read_pid(transform_pid)
+        if transform is None:
+            return ""
+        return self._game_object_name(getattr(transform.m_GameObject, "m_PathID", 0))
+
+    @staticmethod
+    def _skeleton_prefix(name: str) -> str:
+        """同族骨名的前缀：cf_J_* 算一族，joint1…jointN 算一族。"""
+        if (name or "").startswith("cf_J_"):
+            return "cf_J_"
+        match = re.match(r"[A-Za-z_]+", name or "")
+        return match.group(0) if match else ""
+
     def _ensure_game_object_empty(self, game_object_pid: int):
         """按 Unity 的 GameObject 层级逐级补空物体，返回该 GameObject 对应的空物体。
 
@@ -634,25 +649,54 @@ class BundleImporter:
 
     def _build_armature(self, requests) -> None:
         """One armature per bundle, holding the union of every renderer's bones."""
-        union = {}
+        union: dict[int, object] = {}
         for request in requests:
             for pointer, transform in request.bones:
-                union.setdefault(pointer.m_PathID, (pointer, transform))
+                union.setdefault(pointer.m_PathID, transform)
+
+        # SMR 只引用自己用到的骨头，中间节点常常不在列表里；不补回来的话骨架会断成
+        # 一堆根骨，动根骨带不动整只模型。这里把同族（cf_J_… / joint…）的祖先补进来。
+        prefixes = {self._skeleton_prefix(self._bone_object_name(path_id)) for path_id in union}
+        prefixes.discard("")
+        for path_id in list(union):
+            father_pid = getattr(union[path_id].m_Father, "m_PathID", 0)
+            while father_pid and father_pid not in union:
+                father = self._read_pid(father_pid)
+                if father is None:
+                    break
+                if not any(
+                    self._bone_object_name(father_pid).startswith(prefix) for prefix in prefixes
+                ):
+                    break
+                union[father_pid] = father
+                father_pid = getattr(father.m_Father, "m_PathID", 0)
 
         self._armature_world = requests[0].renderer_world
         inverse_world = self._armature_world.inverted_safe()
         rest = {path_id: self._transform_world(path_id) for path_id in union}
 
-        names = {}
-        used = {}
+        # 同一套骨架在这个 bundle 里会被复制多份（一个服装部件一份，位置完全相同）。
+        # 按「骨名 + 世界矩阵」合并成一套，否则会并排出现多个根骨，动一根带不动整只。
+        keepers: dict[tuple, int] = {}
+        representative: dict[int, int] = {}
         for path_id in union:
-            base = sanitize(
-                self._game_object_name(getattr(self._read_pid(path_id).m_GameObject, "m_PathID", 0)),
-                "bone",
+            matrix = rest[path_id]
+            key = (
+                self._bone_object_name(path_id),
+                tuple(round(value, 4) for row in matrix for value in row),
             )
+            representative[path_id] = keepers.setdefault(key, path_id)
+
+        primary = [path_id for path_id in union if representative[path_id] == path_id]
+        names: dict[int, str] = {}
+        used: dict[str, int] = {}
+        for path_id in primary:
+            base = sanitize(self._bone_object_name(path_id), "bone")
             count = used.get(base, 0) + 1
             used[base] = count
             names[path_id] = base if count == 1 else "{0}.{1:03d}".format(base, count)
+        for path_id, keeper in representative.items():
+            names[path_id] = names[keeper]
         self._bone_names = names
 
         name = self._unique_name("armature", "{0}_rig".format(requests[0].object.name or "bundle"))
@@ -681,8 +725,9 @@ class BundleImporter:
         armature.select_set(True)
         bpy.ops.object.mode_set(mode="EDIT")
         try:
-            created = {}
-            for path_id, (_pointer, transform) in union.items():
+            created: dict[int, object] = {}
+            for path_id in primary:
+                transform = union[path_id]
                 matrix = self._blender_matrix(inverse_world @ rest[path_id])
                 head = matrix.to_translation()
                 rotation = matrix.to_3x3()
@@ -707,10 +752,11 @@ class BundleImporter:
                 bone.use_connect = False
                 created[path_id] = bone
 
-            for path_id, (_pointer, transform) in union.items():
-                father = getattr(getattr(transform, "m_Father", None), "m_PathID", 0)
-                if father in created:
-                    created[path_id].parent = created[father]
+            for path_id in primary:
+                father_pid = getattr(union[path_id].m_Father, "m_PathID", 0)
+                keeper = representative.get(father_pid, father_pid)
+                if keeper in created and keeper != path_id:
+                    created[path_id].parent = created[keeper]
                     created[path_id].use_connect = False
         finally:
             bpy.ops.object.mode_set(mode="OBJECT")

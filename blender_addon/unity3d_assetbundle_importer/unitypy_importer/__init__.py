@@ -118,6 +118,7 @@ class UNITYPY_OT_import_zipmod(bpy.types.Operator, ImportHelper):
         reports = []
         importers = []
         bundles = []  # 每个 bundle 一个顶层集合 + 一个根空物体
+        entries: dict[str, dict] = {}
         name_pools: dict[str, set[str]] = {}
         try:
             with unity_loader.collect_bundles(source) as bundle_set:
@@ -127,6 +128,7 @@ class UNITYPY_OT_import_zipmod(bpy.types.Operator, ImportHelper):
                     self.report({"ERROR"}, "{0} 里没有找到 AssetBundle".format(source.name))
                     return self._rollback(bundles, importers)
                 unitypy = unity_loader.import_unitypy()
+                entries = unity_loader.read_characustom(bundle_set.characustom)
                 for reference in bundle_set.bundles:
                     bundle_name = Path(reference.display).stem or "bundle"
                     bundle_collection = bpy.data.collections.new(
@@ -162,7 +164,7 @@ class UNITYPY_OT_import_zipmod(bpy.types.Operator, ImportHelper):
             return self._rollback(bundles, importers)
 
         self._select(imported)
-        self._attach_to_character_bone(context, bundles, importers)
+        self._attach_to_character_bone(context, bundles, importers, entries)
         total_objects = sum(report.objects for report in imported)
         total_vertices = sum(report.vertices for report in imported)
         total_triangles = sum(report.triangles for report in imported)
@@ -179,28 +181,15 @@ class UNITYPY_OT_import_zipmod(bpy.types.Operator, ImportHelper):
         )
         return {"FINISHED"}
 
-    def _attach_to_character_bone(self, context, bundles, importers):
-        """把「自带局部坐标」的 bundle 挂到角色骨上。
+    def _attach_to_character_bone(self, context, bundles, importers, entries):
+        """按登记表把局部坐标的 bundle 挂到角色骨上。
 
-        判断依据：bundle 自己的骨架里有没有 cf_J_ 角色骨。衣服/身体这类 bundle 直接用
-        角色骨架，本身就在角色坐标里，不能动；头发、饰品这类 bundle 用的是自带的通用
-        关节（joint1、joint2……），只有局部坐标，游戏里靠挂到角色骨上才到位。
+        zipmod 里的 `abdata/list/characustom/*.csv` 才是真正的登记表：头发一行带 SetHair，
+        挂头骨；饰品一行带 Parent，挂它声明的那根节点；衣服靠角色骨架自己定位，不挂。
+        没有登记信息的 bundle 退回启发式：自带 cf_J_ 骨的不挂，其余按局部坐标挂头骨。
         """
         if self.attach_mode == "NONE":
             return
-        local_bundles = [
-            (bundle_collection, bundle_root, importer)
-            for (bundle_collection, bundle_root), importer in zip(bundles, importers)
-            if importer.report.objects
-            and not any(
-                object_.type == "ARMATURE"
-                and any(bone.name.startswith("cf_J_") for bone in object_.data.bones)
-                for object_ in bundle_collection.objects
-            )
-        ]
-        if not local_bundles:
-            return
-
         wanted_names = [self.target_bone, "cf_J_Head", "cf_J_Head_s"]
 
         def match_rank(item):
@@ -215,10 +204,8 @@ class UNITYPY_OT_import_zipmod(bpy.types.Operator, ImportHelper):
                 bone.name.startswith("cf_J_") for bone in object_.data.bones
             )
 
-        missed = []
-        for bundle_collection, bundle_root, _importer in local_bundles:
-            # 同一次导入里其它 bundle 建出来的角色骨架也算候选（整包导入时衣服和头发一起来），
-            # 只排除自己 bundle 里的骨架，避免头发挂到自己的通用关节上。
+        def pick_rig(bundle_collection):
+            """找角色骨架：同一次导入里其它 bundle 建的也算，只排除自己 bundle 里的。"""
             own = {object_.name for object_ in bundle_collection.all_objects}
             candidates = [
                 object_
@@ -226,53 +213,81 @@ class UNITYPY_OT_import_zipmod(bpy.types.Operator, ImportHelper):
                 if is_character_rig(object_) and object_.name not in own
             ]
             if self.target_armature:
-                candidates = [
-                    item for item in candidates if item.name == self.target_armature
-                ]
+                candidates = [item for item in candidates if item.name == self.target_armature]
             if not candidates:
-                missed.append(bundle_root.name)
-                continue
+                return None
             candidates.sort(key=match_rank)
-            armature = candidates[0]
-            names = {bone.name for bone in armature.data.bones}
-            bone_name = next((name for name in wanted_names if name and name in names), None)
-            if bone_name is None:
-                bone_name = next(
-                    (name for name in sorted(names) if name.startswith("cf_J_Head")), None
-                )
-            if bone_name is None:
-                missed.append("{0}（{1} 没有头骨）".format(bundle_root.name, armature.name))
+            return candidates[0]
+
+        skipped = []
+        for (bundle_collection, bundle_root), importer in zip(bundles, importers):
+            if not importer.report.objects:
                 continue
+            entry = entries.get(unity_loader.bundle_key(importer.ref.display))
+            role = unity_loader.bundle_role(entry)
+            if role == "clothing":
+                continue  # 衣服本来就长在角色骨架上，不用挂
+            if role == "unknown":
+                has_character_bones = any(
+                    object_.type == "ARMATURE"
+                    and any(bone.name.startswith("cf_J_") for bone in object_.data.bones)
+                    for object_ in bundle_collection.objects
+                )
+                if has_character_bones:
+                    continue
+                role = "hair"  # 没有登记信息、也不是角色骨架：按局部坐标处理
+
+            rig = pick_rig(bundle_collection)
+            if rig is None:
+                skipped.append("{0}（没有可挂的角色骨架）".format(bundle_root.name))
+                continue
+            names = {bone.name for bone in rig.data.bones}
+            if role == "accessory":
+                declared = (entry or {}).get("parent")
+                if not declared or declared not in names:
+                    skipped.append(
+                        "{0}（饰品声明的父节点 {1} 不在骨架里，需要手动指定目标骨骼）".format(
+                            bundle_root.name, declared or "未声明"
+                        )
+                    )
+                    continue
+                bone_name = declared
+            else:
+                bone_name = next((name for name in wanted_names if name and name in names), None)
+                if bone_name is None:
+                    bone_name = next(
+                        (name for name in sorted(names) if name.startswith("cf_J_Head")), None
+                    )
+                if bone_name is None:
+                    skipped.append("{0}（{1} 里没有头骨）".format(bundle_root.name, rig.name))
+                    continue
+
             try:
                 target = builder.attach_object_to_bone(
-                    bundle_root, armature, bone_name, tuple(self.attach_offset)
+                    bundle_root, rig, bone_name, tuple(self.attach_offset)
                 )
             except Exception as exc:  # noqa: BLE001 - 挂载失败不能丢掉已经导入的模型
-                self.report(
-                    {"WARNING"},
-                    "{0} 挂到骨骼失败：{1}: {2}".format(
+                skipped.append(
+                    "{0}（挂载失败 {1}: {2}）".format(
                         bundle_root.name, type(exc).__name__, exc
-                    ),
+                    )
                 )
                 continue
             self.report(
                 {"INFO"},
-                "{0} 已挂到角色骨骼 {1}/{2}，世界原点 {3}".format(
+                "{0}（{1}）已挂到角色骨骼 {2}/{3}，世界原点 {4}".format(
                     bundle_root.name,
-                    armature.name,
+                    role,
+                    rig.name,
                     bone_name,
                     tuple(round(v, 3) for v in target),
                 ),
             )
-        if missed:
+        if skipped:
             self.report(
                 {"WARNING"},
-                "{0} 没找到可挂的角色骨架，已按 bundle 原点导入；"
-                "可以先导入角色/衣服，或填「目标骨架 / 目标骨骼」手动指定".format(
-                    "、".join(missed)
-                ),
+                "{0}；需要的话用面板里的「目标骨骼 / 挂点偏移」手动指定".format("、".join(skipped)),
             )
-
     def _rollback(self, bundles, importers):
         """失败时清掉本次新建的集合、物体和数据块，不留半成品。"""
         for bundle_collection, bundle_root in bundles:

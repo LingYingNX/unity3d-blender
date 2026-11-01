@@ -238,7 +238,17 @@ def main() -> int:
         bone_total = sum(
             len(object_.data.bones) for object_ in bpy.data.objects if object_.type == "ARMATURE"
         )
-        check(bone_total == 181, "骨架合并了 181 根骨（实际 {0}）".format(bone_total))
+        rig = next(object_ for object_ in bpy.data.objects if object_.type == "ARMATURE")
+        roots = [bone for bone in rig.data.bones if bone.parent is None]
+        check(bone_total == 225, "骨架合并成 225 根骨（实际 {0}）".format(bone_total))
+        check(
+            len(roots) == 1,
+            "骨架是一棵完整树、只有一个根骨（实际 {0}：{1}）".format(
+                len(roots), [bone.name for bone in roots][:4]
+            ),
+        )
+        depth = max((len(list(bone.parent_recursive)) for bone in rig.data.bones), default=0)
+        check(depth >= 10, "骨骼层级有纵深（实际 {0} 层）".format(depth))
 
     # 2) 整个 zipmod：多 bundle
     reset_scene()
@@ -259,7 +269,10 @@ def main() -> int:
             if object_.type == "EMPTY" and object_.parent_type == "BONE"
         )
         print("    整包导入后挂到骨骼:", attached)
-        check(len(attached) == 2, "头发与饰品挂上角色骨（实际 {0}）".format(attached))
+        check(
+            attached == ["[YYG]ZYLZTF"],
+            "只挂头发；饰品因声明的父节点缺失不挂（实际 {0}）".format(attached),
+        )
         hair_collection = bpy.data.collections.get("[YYG]ZYLZTF")
         hair_meshes = [
             object_
@@ -345,12 +358,8 @@ def main() -> int:
             )
             print("    挂到骨骼的 bundle:", attached)
             check(
-                len(attached) == 2,
-                "只有局部坐标的 2 个 bundle 被挂载（实际 {0}）".format(attached),
-            )
-            check(
-                all(("SP" in name or "TF" in name) for name in attached),
-                "被挂的是饰品与头发（实际 {0}）".format(attached),
+                attached == ["[YYG]ZYLZTF"],
+                "整包只挂头发，饰品按声明跳过（实际 {0}）".format(attached),
             )
 
     failed = [message for ok, message in RESULTS if not ok]
