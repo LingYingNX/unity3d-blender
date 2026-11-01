@@ -44,6 +44,33 @@ def sanitize(name: str, fallback: str = "unnamed") -> str:
     return cleaned[:120] or fallback
 
 
+def attach_object_to_bone(object_, armature, bone_name: str, offset=(0.0, 0.0, 0.0)):
+    """把物体用骨骼父级挂到指定骨骼，并让它的世界原点落在骨骼头部。
+
+    局部坐标的模型（HS2 的头发、饰品）在游戏里就是靠这种方式贴到角色骨上的：bundle
+    自己只带相对坐标，父变换来自角色。Blender 骨骼父级的父空间原点在骨骼尾端，各版本
+    约定可能变，所以这里先把父级矩阵实测出来，再反推 matrix_basis，不靠内部约定。
+    """
+    bone = armature.data.bones.get(bone_name)
+    if bone is None:
+        raise ValueError("骨架 {0} 里没有骨骼 {1}".format(armature.name, bone_name))
+
+    scale = object_.scale.copy()
+    object_.parent = armature
+    object_.parent_type = "BONE"
+    object_.parent_bone = bone_name
+    object_.matrix_parent_inverse = Matrix.Identity(4)
+    object_.matrix_basis = Matrix.Identity(4)
+    bpy.context.view_layer.update()
+    parent_matrix = object_.matrix_world.copy()
+
+    target = (armature.matrix_world @ bone.head_local) + Vector(offset)
+    wanted = Matrix.Translation(target) @ Matrix.Diagonal(scale).to_4x4()
+    object_.matrix_basis = parent_matrix.inverted() @ wanted
+    bpy.context.view_layer.update()
+    return target
+
+
 @dataclass
 class ImportOptions:
     import_armatures: bool = True
@@ -122,6 +149,8 @@ class BundleImporter:
         self._go_name_cache: dict[int, str] = {}
         self._world_cache: dict[int, Matrix] = {}
         self._go_transform_cache: dict[int, int] = {}
+        self._go_empties: dict[int, bpy.types.Object] = {}
+        self._go_stack: set[int] = set()
         self._materials: dict[tuple[str, int], bpy.types.Material] = {}
         self._images: dict[tuple[str, int], bpy.types.Image | None] = {}
         self._armature: bpy.types.Object | None = None
@@ -219,6 +248,62 @@ class BundleImporter:
                 break
         self._go_transform_cache[game_object_pid] = pid
         return pid
+
+    def _game_object_father(self, game_object_pid: int) -> int:
+        """父级 GameObject 的 path_id；没有父级返回 0。"""
+        transform = self._read_pid(self._game_object_transform_pid(game_object_pid))
+        if transform is None:
+            return 0
+        father_pid = getattr(transform.m_Father, "m_PathID", 0)
+        if not father_pid:
+            return 0
+        father = self._read_pid(father_pid)
+        if father is None:
+            return 0
+        return getattr(father.m_GameObject, "m_PathID", 0)
+
+    def _game_object_local_matrix(self, game_object_pid: int) -> Matrix:
+        """GameObject 在父级坐标系里的变换（Unity 局部矩阵）。
+
+        用局部矩阵而不是世界矩阵来摆放：Blender 对「有父级的物体」赋 matrix_world 时
+        会按父级局部来解释，父级带缩放时会摆错；逐级给局部变换才和 Unity 的层级一致，
+        导入缩放也由最外层根空物体统一生效。
+        """
+        transform = self._read_pid(self._game_object_transform_pid(game_object_pid))
+        if transform is None:
+            return Matrix.Identity(4)
+        return self._local_matrix(transform)
+
+    def _ensure_game_object_empty(self, game_object_pid: int):
+        """按 Unity 的 GameObject 层级逐级补空物体，返回该 GameObject 对应的空物体。
+
+        不做这一步的话，一个 prefab 导进来会变成一堆平铺的网格；补回来之后 Outliner 里
+        就是 Unity 里那棵树（名字、层级、世界变换一致）。
+        """
+        if not game_object_pid:
+            return self.parent
+        if game_object_pid in self._go_empties:
+            return self._go_empties[game_object_pid]
+        if game_object_pid in self._go_stack:  # 数据成环时停止递归
+            return self.parent
+
+        self._go_stack.add(game_object_pid)
+        try:
+            father = self._game_object_father(game_object_pid)
+            parent = self._ensure_game_object_empty(father) if father else self.parent
+            empty = bpy.data.objects.new(
+                self._unique_name("object", self._game_object_name(game_object_pid) or "GameObject"),
+                None,
+            )
+            self.collection.objects.link(empty)
+            self.created_objects.append(empty)
+            if parent is not None:
+                empty.parent = parent
+            empty.matrix_basis = self._blender_matrix(self._game_object_local_matrix(game_object_pid))
+            self._go_empties[game_object_pid] = empty
+            return empty
+        finally:
+            self._go_stack.discard(game_object_pid)
 
     def _component_world(self, component) -> Matrix:
         game_object = getattr(component.m_GameObject, "m_PathID", 0)
@@ -360,9 +445,11 @@ class BundleImporter:
         self.collection.objects.link(object_)
         self.created_objects.append(object_)
         self.created_meshes.append(mesh)
-        if self.parent is not None:
-            object_.parent = self.parent
-        object_.matrix_world = self._blender_matrix(self._component_world(renderer))
+        game_object_pid = getattr(renderer.m_GameObject, "m_PathID", 0)
+        parent_empty = self._ensure_game_object_empty(self._game_object_father(game_object_pid))
+        if parent_empty is not None:
+            object_.parent = parent_empty
+        object_.matrix_basis = self._blender_matrix(self._game_object_local_matrix(game_object_pid))
 
         self._assign_materials(object_, renderer, face_slots)
 
@@ -576,7 +663,7 @@ class BundleImporter:
         self.created_armatures.append(armature_data)
         if self.parent is not None:
             armature.parent = self.parent
-        armature.matrix_world = self._blender_matrix(self._armature_world)
+        armature.matrix_basis = self._blender_matrix(self._armature_world)
         self._armature = armature
 
         positions = [

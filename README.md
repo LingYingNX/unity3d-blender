@@ -16,6 +16,8 @@ Blender 插件：用 [UnityPy](https://github.com/K0lb3/UnityPy) 直接读取 Un
 - 材质按 Unity 属性接线：`_MainTex` 基础色、`_BumpMap` 法线、`_Metallic`/`_Glossiness`、`_Cutoff` 与 `_Mode` 透明模式。
 - 贴图解码后写 PNG，并在导入时打包进 `.blend`，避免保存后丢图。
 - `SkinnedMeshRenderer` 的骨骼合并成一套骨架（一个 AssetBundle 一套），写入顶点权重并挂 Armature 修改器。
+- 按 Unity 的 GameObject 层级重建空物体树：父节点、名字、局部变换都跟 prefab 一致，Outliner 里不再是平铺的一堆网格；每个 AssetBundle 单独放进一个子集合（如 `[YYG]ZYLZTF`）。
+- 局部坐标的 bundle（头发、饰品这类自带 `joint1…jointN` 通用关节、网格落在原点的）导入后自动挂到角色骨架的头骨（默认 `cf_J_Head`，找不到就试 `cf_J_Head_s`），跟随角色；已经在角色坐标里的 bundle（衣服、身体，自带 `cf_J_*` 骨骼）不会被搬动。
 - 导入缩放：HS2 几何约 10 单位每米，填 `0.1` 即换算成米；默认 `1.0` 保持原尺度。
 - 失败回滚：路径不存在、压缩包损坏、解出 0 个网格时，本次新建的集合、物体、网格、骨架、材质、贴图全部清掉，不留半成品。
 - 插件界面名称、菜单条目与操作符提示为中文。
@@ -41,9 +43,24 @@ Blender 插件：用 [UnityPy](https://github.com/K0lb3/UnityPy) 直接读取 Un
 1. 选择 `文件 > 导入 > Zipmod / Unity3D（UnityPy 直读）`。
 2. 选文件：`.zipmod` 整包导入；也可以直接选单个 `.unity3d`。
 3. 在右侧导入面板调整：导入骨骼蒙皮、导入贴图、贴图打包进 `.blend`、贴图输出目录、导入缩放。
-4. 导入结果是来源命名的集合，集合下有一个空物体当根（缩放作用在它身上），网格用 GameObject 原名命名，蒙皮网格挂 Armature 修改器。
+4. 导入结果的结构：`来源集合（如 [YYG]-…zipmod）` → `每个 bundle 的子集合（如 [YYG]ZYLZTF）` → `bundle 根空物体（缩放作用在它身上）` → `Unity 的 GameObject 层级空物体` → `网格对象`。
+5. 网格用 GameObject 原名命名，蒙皮网格挂 Armature 修改器；局部坐标的头发/饰品会自动挂到角色头骨（见上）。
 
 散装安装的 mod（`abdata/chara/<作者>/*.unity3d`）逐个文件导入即可。
+
+### 头发、饰品为什么需要"挂骨骼"
+
+HS2 的头发/饰品 prefab 只带相对坐标：网格和自带骨架都在原点附近，游戏运行时把这个 prefab 挂到角色骨上（`-TF.csv` 表头里的 `SetHair` 列就是这个分类），才会出现在头上。直接单放这个 bundle，在 Unity 里也同样是待在原地。
+
+实测（同一个 zipmod 的三个 bundle）：
+
+| bundle | 网格 Y 范围（角色总高约 15.9） | 骨架 | 导入行为 |
+| --- | --- | --- | --- |
+| `[YYG]ZYLZ.unity3d` 衣服 | -0.7 ~ 15.8 | `cf_J_*` 角色骨 | 已在角色坐标，不挂 |
+| `[YYG]ZYLZSP.unity3d` 饰品 | -1.2 ~ 0.7 | 无骨骼 | 自动挂到头骨 |
+| `[YYG]ZYLZTF.unity3d` 头发 | -9.2 ~ 2.1 | `joint1…joint32` | 自动挂到头骨 |
+
+导入面板里可以改：`挂到角色骨骼`（自动/不挂）、`目标骨架`、`目标骨骼`、`挂点偏移`。想手动做也一样：把该 bundle 的根空物体用骨骼父级挂到角色骨架的 `cf_J_Head_s`。
 
 ## 验证
 

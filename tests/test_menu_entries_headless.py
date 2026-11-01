@@ -139,6 +139,10 @@ def main() -> int:
         "pack_textures",
         "texture_dir",
         "unit_scale",
+        "attach_mode",
+        "target_armature",
+        "target_bone",
+        "attach_offset",
         "filepath",
         "filter_glob",
     ):

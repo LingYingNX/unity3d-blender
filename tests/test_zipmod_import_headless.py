@@ -93,6 +93,8 @@ def scene_stats() -> dict:
         "packed_images": len([image for image in images if image.packed_file is not None]),
         "vertex_groups": sum(len(object_.vertex_groups) for object_ in meshes),
         "modifiers": sum(len(object_.modifiers) for object_ in meshes),
+        "empties": len([object_ for object_ in bpy.data.objects if object_.type == "EMPTY"]),
+        "collections": sorted(collection.name for collection in bpy.data.collections),
     }
 
 
@@ -156,6 +158,18 @@ def world_height() -> float:
     return (max(values) - min(values)) if values else 0.0
 
 
+def world_z_range(objects=None) -> tuple[float, float]:
+    from mathutils import Vector
+
+    values = []
+    for object_ in (objects if objects is not None else bpy.data.objects):
+        if object_.type != "MESH":
+            continue
+        for corner in object_.bound_box:
+            values.append((object_.matrix_world @ Vector(corner)).z)
+    return (min(values), max(values)) if values else (0.0, 0.0)
+
+
 def import_path(path: Path, **overrides) -> str:
     options = {
         "filepath": str(path),
@@ -200,6 +214,21 @@ def main() -> int:
         check(stats["armatures"] == 1, "合并成 1 套骨架（实际 {0}）".format(stats["armatures"]))
         check(stats["modifiers"] == stats["mesh_objects"], "每个网格都挂了骨架修改器")
         check(stats["vertex_groups"] > 0, "写入顶点组（实际 {0}）".format(stats["vertex_groups"]))
+        check(stats["empties"] >= 20, "重建了 GameObject 层级空物体（实际 {0}）".format(stats["empties"]))
+        check(
+            "[YYG]ZYLZ" in stats["collections"],
+            "每个 bundle 有自己的子集合（实际 {0}）".format(stats["collections"]),
+        )
+        names = {object_.name for object_ in bpy.data.objects}
+        check("n_clothes_cf_00" in names, "保留了 Unity 层级节点名 n_clothes_cf_00")
+        check(
+            all(
+                object_.parent is not None and object_.parent.type == "EMPTY"
+                for object_ in bpy.data.objects
+                if object_.type == "MESH"
+            ),
+            "每个网格都挂在 GameObject 空物体下",
+        )
         agreement = winding_agreement()
         check(agreement > 0.9, "三角形绕序与法线一致：{0:.3f}".format(agreement))
         problems = skin_integrity()
@@ -219,6 +248,10 @@ def main() -> int:
         check(stats["mesh_objects"] == 34, "34 个网格（实际 {0}）".format(stats["mesh_objects"]))
         check(stats["vertices"] == 128543, "128543 个顶点（实际 {0}）".format(stats["vertices"]))
         check(stats["armatures"] == 2, "2 套骨架（实际 {0}）".format(stats["armatures"]))
+        check(
+            {"[YYG]ZYLZ", "[YYG]ZYLZSP", "[YYG]ZYLZTF"} <= set(stats["collections"]),
+            "每个 bundle 一个集合（实际 {0}）".format(stats["collections"]),
+        )
 
     # 3) 异常路径必须干净取消
     reset_scene()
@@ -244,6 +277,64 @@ def main() -> int:
         stats = scene_stats()
         check(stats["armatures"] == 0, "没有骨架（实际 {0}）".format(stats["armatures"]))
         check(stats["mesh_objects"] == 28, "网格仍完整（实际 {0}）".format(stats["mesh_objects"]))
+
+    # 6) 局部坐标的头发：不挂 = 停在原点，挂到角色骨 = 上头
+    hair = FIXTURE_DIR / "abdata" / "chara" / "YYG" / "[YYG]ZYLZTF.unity3d"
+    reset_scene()
+    if check(import_path(hair, attach_mode="NONE") == "FINISHED", "关闭挂载时导入头发"):
+        low, high = world_z_range()
+        print("    不挂载 z 范围: {0:.2f} ~ {1:.2f}".format(low, high))
+        check(high < 5.0, "不挂载时头发停在原点附近（z 上限 {0:.2f}）".format(high))
+
+    reset_scene()
+    if check(import_path(single) == "FINISHED", "先导入带角色骨架的衣服"):
+        rig = next((o for o in bpy.data.objects if o.type == "ARMATURE"), None)
+        check(rig is not None, "衣服导入了角色骨架")
+        check(
+            not any(object_.parent_type == "BONE" for object_ in bpy.data.objects),
+            "已经在角色坐标里的衣服不挂骨骼",
+        )
+        if check(import_path(hair) == "FINISHED", "开着自动挂载导入头发"):
+            roots = [o for o in bpy.data.objects if o.type == "EMPTY" and o.parent is rig]
+            check(len(roots) == 1, "头发的根空物体挂到了角色骨架（实际 {0}）".format(len(roots)))
+            if roots:
+                root = roots[0]
+                check(root.parent_type == "BONE", "父级类型是骨骼（实际 {0}）".format(root.parent_type))
+                check(
+                    root.parent_bone.startswith("cf_J_Head"),
+                    "挂在头骨上（实际 {0}）".format(root.parent_bone),
+                )
+            # 只量头发自己的网格：它在自己的子集合里，场景里还有先导入的衣服。
+            hair_collection = bpy.data.collections.get("[YYG]ZYLZTF")
+            check(hair_collection is not None, "头发 bundle 有自己的子集合")
+            hair_meshes = [
+                object_
+                for object_ in (hair_collection.all_objects if hair_collection else [])
+                if object_.type == "MESH"
+            ]
+            check(len(hair_meshes) == 5, "头发网格都在头发子集合里（实际 {0}）".format(len(hair_meshes)))
+            low, high = world_z_range(hair_meshes)
+            print("    挂载后头发 z 范围: {0:.2f} ~ {1:.2f}".format(low, high))
+            check(low > 5.0 and high > 15.0, "头发被抬到头部高度（{0:.2f} ~ {1:.2f}）".format(low, high))
+
+    # 7) 整包导入：只挂局部坐标的 bundle，角色坐标的衣服不能跟着跑
+    reset_scene()
+    if check(import_path(single) == "FINISHED", "整包测试：先导入衣服提供角色骨架"):
+        if check(import_path(ARCHIVE) == "FINISHED", "整包导入（衣服 + 饰品 + 头发）"):
+            attached = sorted(
+                object_.name
+                for object_ in bpy.data.objects
+                if object_.type == "EMPTY" and object_.parent_type == "BONE"
+            )
+            print("    挂到骨骼的 bundle:", attached)
+            check(
+                len(attached) == 2,
+                "只有局部坐标的 2 个 bundle 被挂载（实际 {0}）".format(attached),
+            )
+            check(
+                all(("SP" in name or "TF" in name) for name in attached),
+                "被挂的是饰品与头发（实际 {0}）".format(attached),
+            )
 
     failed = [message for ok, message in RESULTS if not ok]
     print("RESULT: {0} passed, {1} failed".format(len(RESULTS) - len(failed), len(failed)))
