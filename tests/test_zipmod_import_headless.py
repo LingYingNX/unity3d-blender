@@ -252,6 +252,23 @@ def main() -> int:
             {"[YYG]ZYLZ", "[YYG]ZYLZSP", "[YYG]ZYLZTF"} <= set(stats["collections"]),
             "每个 bundle 一个集合（实际 {0}）".format(stats["collections"]),
         )
+        # 整包一次导入时，头发要挂到同一次导入里衣服带的角色骨上（这就是最容易漏的场景）。
+        attached = sorted(
+            object_.name
+            for object_ in bpy.data.objects
+            if object_.type == "EMPTY" and object_.parent_type == "BONE"
+        )
+        print("    整包导入后挂到骨骼:", attached)
+        check(len(attached) == 2, "头发与饰品挂上角色骨（实际 {0}）".format(attached))
+        hair_collection = bpy.data.collections.get("[YYG]ZYLZTF")
+        hair_meshes = [
+            object_
+            for object_ in (hair_collection.all_objects if hair_collection else [])
+            if object_.type == "MESH"
+        ]
+        low, high = world_z_range(hair_meshes)
+        print("    整包导入后头发 z 范围: {0:.2f} ~ {1:.2f}".format(low, high))
+        check(low > 5.0 and high > 15.0, "整包导入头发也上头（{0:.2f} ~ {1:.2f}）".format(low, high))
 
     # 3) 异常路径必须干净取消
     reset_scene()

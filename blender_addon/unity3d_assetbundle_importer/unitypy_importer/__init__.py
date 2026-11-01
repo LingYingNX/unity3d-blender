@@ -188,7 +188,6 @@ class UNITYPY_OT_import_zipmod(bpy.types.Operator, ImportHelper):
         """
         if self.attach_mode == "NONE":
             return
-        created = {object_.name for importer in importers for object_ in importer.created_objects}
         local_bundles = [
             (bundle_collection, bundle_root, importer)
             for (bundle_collection, bundle_root), importer in zip(bundles, importers)
@@ -202,29 +201,6 @@ class UNITYPY_OT_import_zipmod(bpy.types.Operator, ImportHelper):
         if not local_bundles:
             return
 
-        armatures = [
-            object_
-            for object_ in bpy.data.objects
-            if object_.type == "ARMATURE" and object_.name not in created
-        ]
-        if self.target_armature:
-            armatures = [item for item in armatures if item.name == self.target_armature]
-        candidates = [
-            item
-            for item in armatures
-            if any(bone.name.startswith("cf_J_") for bone in item.data.bones)
-        ]
-        if not candidates:
-            self.report(
-                {"WARNING"},
-                "{0} 个局部坐标 bundle（{1}）没找到可挂的角色骨架，已按 bundle 原点导入；"
-                "可以先导入角色/衣服，或填「目标骨架 / 目标骨骼」手动指定".format(
-                    len(local_bundles),
-                    "、".join(bundle_root.name for _, bundle_root, _ in local_bundles[:4]),
-                ),
-            )
-            return
-
         wanted_names = [self.target_bone, "cf_J_Head", "cf_J_Head_s"]
 
         def match_rank(item):
@@ -234,19 +210,39 @@ class UNITYPY_OT_import_zipmod(bpy.types.Operator, ImportHelper):
                     return index
             return len(wanted_names)
 
-        candidates.sort(key=match_rank)
-        armature = candidates[0]
-        names = {bone.name for bone in armature.data.bones}
-        bone_name = next((name for name in wanted_names if name and name in names), None)
-        if bone_name is None:
-            bone_name = next(
-                (name for name in sorted(names) if name.startswith("cf_J_Head")), None
+        def is_character_rig(object_):
+            return object_.type == "ARMATURE" and any(
+                bone.name.startswith("cf_J_") for bone in object_.data.bones
             )
-        if bone_name is None:
-            self.report({"WARNING"}, "{0} 里没有可用的头骨，保持原样".format(armature.name))
-            return
 
-        for _bundle_collection, bundle_root, _importer in local_bundles:
+        missed = []
+        for bundle_collection, bundle_root, _importer in local_bundles:
+            # 同一次导入里其它 bundle 建出来的角色骨架也算候选（整包导入时衣服和头发一起来），
+            # 只排除自己 bundle 里的骨架，避免头发挂到自己的通用关节上。
+            own = {object_.name for object_ in bundle_collection.all_objects}
+            candidates = [
+                object_
+                for object_ in bpy.data.objects
+                if is_character_rig(object_) and object_.name not in own
+            ]
+            if self.target_armature:
+                candidates = [
+                    item for item in candidates if item.name == self.target_armature
+                ]
+            if not candidates:
+                missed.append(bundle_root.name)
+                continue
+            candidates.sort(key=match_rank)
+            armature = candidates[0]
+            names = {bone.name for bone in armature.data.bones}
+            bone_name = next((name for name in wanted_names if name and name in names), None)
+            if bone_name is None:
+                bone_name = next(
+                    (name for name in sorted(names) if name.startswith("cf_J_Head")), None
+                )
+            if bone_name is None:
+                missed.append("{0}（{1} 没有头骨）".format(bundle_root.name, armature.name))
+                continue
             try:
                 target = builder.attach_object_to_bone(
                     bundle_root, armature, bone_name, tuple(self.attach_offset)
@@ -266,6 +262,14 @@ class UNITYPY_OT_import_zipmod(bpy.types.Operator, ImportHelper):
                     armature.name,
                     bone_name,
                     tuple(round(v, 3) for v in target),
+                ),
+            )
+        if missed:
+            self.report(
+                {"WARNING"},
+                "{0} 没找到可挂的角色骨架，已按 bundle 原点导入；"
+                "可以先导入角色/衣服，或填「目标骨架 / 目标骨骼」手动指定".format(
+                    "、".join(missed)
                 ),
             )
 
