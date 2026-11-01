@@ -318,7 +318,7 @@ _NODE_BONE_CANDIDATES = {
 # 不同游戏）也能按名字自己认出来，不用每次补一条。
 _REGION_KEYWORDS = (
     ("head", ("head", "hair", "face", "eye", "ear", "earring", "mouth", "nose", "cheek",
-              "horn", "hat", "cap", "visor", "mask", "glasses", "crown", "halo", "ff", "ahoge")),
+              "horn", "hat", "cap", "visor", "mask", "glasses", "crown", "halo", "ahoge")),
     ("neck", ("neck", "kubi", "collar")),
     ("chest", ("chest", "mune", "breast", "bust")),
     ("waist", ("waist", "kosi", "hip", "pelvis", "spine", "back", "belt", "skirt", "tail")),

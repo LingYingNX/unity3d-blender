@@ -10,7 +10,6 @@ import tempfile
 from pathlib import Path
 
 import bpy
-from mathutils import Vector
 from bpy.props import (
     BoolProperty,
     CollectionProperty,
@@ -188,30 +187,35 @@ class UNITYPY_OT_import_zipmod(bpy.types.Operator, ImportHelper):
         importers = []
         bundles = []
         entries: dict[str, dict] = {}
-        with unity_loader.collect_bundles(source) as bundle_set:
-            if not bundle_set.bundles:
+        try:
+            with unity_loader.collect_bundles(source) as bundle_set:
+                if not bundle_set.bundles:
+                    for warning in bundle_set.warnings:
+                        self.report({"WARNING"}, warning)
+                    raise ValueError("{0} 里没有找到 AssetBundle".format(source.name))
+                unitypy = unity_loader.import_unitypy()
+                entries = unity_loader.read_characustom(bundle_set.characustom)
+                for reference in bundle_set.bundles:
+                    bundle_name = Path(reference.display).stem or "bundle"
+                    bundle_collection = bpy.data.collections.new(bundle_name)
+                    context.scene.collection.children.link(bundle_collection)
+                    bundle_root = bpy.data.objects.new(
+                        builder.unique_name(name_pools, "object", bundle_name, "bundle"), None
+                    )
+                    bundle_collection.objects.link(bundle_root)
+                    bundle_root.parent = root
+                    bundles.append((bundle_collection, bundle_root))
+                    importer = builder.BundleImporter(
+                        unitypy, reference, options, bundle_collection, bundle_root, name_pools
+                    )
+                    importers.append(importer)
+                    reports.append(importer.run())
                 for warning in bundle_set.warnings:
                     self.report({"WARNING"}, warning)
-                raise ValueError("{0} 里没有找到 AssetBundle".format(source.name))
-            unitypy = unity_loader.import_unitypy()
-            entries = unity_loader.read_characustom(bundle_set.characustom)
-            for reference in bundle_set.bundles:
-                bundle_name = Path(reference.display).stem or "bundle"
-                bundle_collection = bpy.data.collections.new(bundle_name)
-                context.scene.collection.children.link(bundle_collection)
-                bundle_root = bpy.data.objects.new(
-                    builder.unique_name(name_pools, "object", bundle_name, "bundle"), None
-                )
-                bundle_collection.objects.link(bundle_root)
-                bundle_root.parent = root
-                bundles.append((bundle_collection, bundle_root))
-                importer = builder.BundleImporter(
-                    unitypy, reference, options, bundle_collection, bundle_root, name_pools
-                )
-                importers.append(importer)
-                reports.append(importer.run())
-            for warning in bundle_set.warnings:
-                self.report({"WARNING"}, warning)
+        except Exception:
+            # 这个来源里的半成品自己收拾干净，别把残留丢给整批
+            self._rollback(bundles, importers)
+            raise
         return reports, importers, bundles, entries
 
     def _attach_to_character_bone(self, context, bundles, importers, entries):
@@ -332,7 +336,7 @@ class UNITYPY_OT_import_zipmod(bpy.types.Operator, ImportHelper):
                 position = builder.attach_object_to_target(
                     bundle_root, target[0], target[1], tuple(self.attach_offset)
                 )
-            except Exception as exc:  # noqa: BLE001 - 挂载失败不能丢掉已经导入的模型
+            except Exception:  # noqa: BLE001 - 挂载失败不能丢掉已经导入的模型
                 continue
             self.report(
                 {"INFO"},

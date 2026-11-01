@@ -8,7 +8,6 @@ from __future__ import annotations
 import argparse
 import collections
 import sys
-from pathlib import Path
 
 import UnityPy
 from UnityPy.helpers.MeshHelper import MeshHandler
