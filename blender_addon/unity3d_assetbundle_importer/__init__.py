@@ -1,10 +1,10 @@
 bl_info = {
     "name": "Unity3D资源包导入器",
     "author": "Local",
-    "version": (0, 2, 0),
+    "version": (0, 3, 0),
     "blender": (4, 0, 0),
-    "location": "文件 > 导入 > Unity3D资源包 (.unity3d)",
-    "description": "选择 Unity3D AssetBundle 文件，临时转换为 FBX，打包贴图并导入当前 Blender 场景。",
+    "location": "文件 > 导入 > Unity3D资源包 (.unity3d) / Zipmod（UnityPy 直读）",
+    "description": "两条导入路线：AssetStudio 转 FBX 后导入，或用 UnityPy 直读 zipmod / AssetBundle 并建骨架蒙皮。",
     "category": "Import-Export",
 }
 
@@ -15,6 +15,8 @@ from pathlib import Path
 import bpy
 from bpy.props import BoolProperty, EnumProperty, FloatProperty, StringProperty
 from bpy_extras.io_utils import ImportHelper
+
+from . import unitypy_importer
 
 
 ADDON_DIR = Path(__file__).resolve().parent
@@ -208,9 +210,17 @@ def register():
     for cls in classes:
         bpy.utils.register_class(cls)
     bpy.types.TOPBAR_MT_file_import.append(menu_func_import)
+    try:
+        unitypy_importer.register()
+    except Exception as exc:  # noqa: BLE001 - 直读路线失败不能拖垮 FBX 路线
+        print("UnityPy 直读导入器注册失败: {0}".format(exc))
 
 
 def unregister():
+    try:
+        unitypy_importer.unregister()
+    except Exception as exc:  # noqa: BLE001 - 反注册失败不影响主插件
+        print("UnityPy 直读导入器注销失败: {0}".format(exc))
     bpy.types.TOPBAR_MT_file_import.remove(menu_func_import)
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)

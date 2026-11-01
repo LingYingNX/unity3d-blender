@@ -1,0 +1,245 @@
+"""UnityPy 直读路线的端到端无头测试（网格 / 材质 / 贴图 / 骨架 / 异常路径 / 缩放）。
+
+固件从游戏目录里的真实 zipmod 现取现解，不需要提前准备。
+
+运行：
+  blender -b --factory-startup --python tests/test_zipmod_import_headless.py
+"""
+
+from __future__ import annotations
+
+import sys
+import time
+import zipfile
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "blender_addon"))
+
+import bpy  # noqa: E402
+
+GAME_MODS = Path(r"F:\HY\HS22\HoneySelect2_ArcticFox\mods")
+ARCHIVE = GAME_MODS / "[YYG]-孙尚香 自由礼赞.zipmod"
+LOCAL = ROOT / "_local"
+FIXTURE_DIR = LOCAL / "YYG"
+
+RESULTS: list[tuple[bool, str]] = []
+
+
+def check(condition: bool, message: str) -> bool:
+    RESULTS.append((bool(condition), message))
+    print("{0} {1}".format("PASS" if condition else "FAIL", message))
+    return bool(condition)
+
+
+def ensure_fixtures() -> Path | None:
+    """Extract the chara bundles out of the zipmod once, reuse afterwards."""
+    single = FIXTURE_DIR / "abdata" / "chara" / "YYG" / "[YYG]ZYLZ.unity3d"
+    if single.exists():
+        return single
+    if not ARCHIVE.exists():
+        return None
+    with zipfile.ZipFile(ARCHIVE) as handle:
+        for member in handle.infolist():
+            name = member.filename.replace("\\", "/")
+            if not name.startswith("abdata/chara/YYG/") or not name.endswith(".unity3d"):
+                continue
+            output = FIXTURE_DIR.joinpath(*name.split("/"))
+            output.parent.mkdir(parents=True, exist_ok=True)
+            with handle.open(member) as source, open(output, "wb") as destination:
+                destination.write(source.read())
+    return single if single.exists() else None
+
+
+def reset_scene() -> None:
+    for collection in list(bpy.data.collections):
+        bpy.data.collections.remove(collection)
+    for object_ in list(bpy.data.objects):
+        bpy.data.objects.remove(object_, do_unlink=True)
+    for mesh in list(bpy.data.meshes):
+        bpy.data.meshes.remove(mesh)
+    for armature in list(bpy.data.armatures):
+        bpy.data.armatures.remove(armature)
+    for material in list(bpy.data.materials):
+        bpy.data.materials.remove(material)
+    for image in list(bpy.data.images):
+        if image.users == 0 and image.name != "Render Result":
+            bpy.data.images.remove(image)
+
+
+def scene_stats() -> dict:
+    meshes = [object_ for object_ in bpy.data.objects if object_.type == "MESH"]
+    armatures = [object_ for object_ in bpy.data.objects if object_.type == "ARMATURE"]
+    # 只看从文件加载的贴图，排除 Blender 自带的 Render Result / Viewer Node。
+    images = [image for image in bpy.data.images if image.source == "FILE"]
+    return {
+        "mesh_objects": len(meshes),
+        "armatures": len(armatures),
+        "vertices": sum(len(object_.data.vertices) for object_ in meshes),
+        "polygons": sum(len(object_.data.polygons) for object_ in meshes),
+        "uv_layers": sum(len(object_.data.uv_layers) for object_ in meshes),
+        "materials": len(bpy.data.materials),
+        "images": len(images),
+        "packed_images": len([image for image in images if image.packed_file is not None]),
+        "vertex_groups": sum(len(object_.vertex_groups) for object_ in meshes),
+        "modifiers": sum(len(object_.modifiers) for object_ in meshes),
+    }
+
+
+def winding_agreement() -> float:
+    from mathutils import Vector
+
+    agree = 0
+    total = 0
+    for object_ in bpy.data.objects:
+        if object_.type != "MESH" or not object_.data.vertices:
+            continue
+        mesh = object_.data
+        for polygon in mesh.polygons:
+            if polygon.normal.length < 1e-9:
+                continue
+            accumulated = Vector((0.0, 0.0, 0.0))
+            for index in polygon.vertices:
+                accumulated += mesh.vertices[index].normal
+            if accumulated.length < 1e-9:
+                continue
+            total += 1
+            if polygon.normal.dot(accumulated.normalized()) > 0.0:
+                agree += 1
+    return (agree / total) if total else 1.0
+
+
+def skin_integrity() -> list[str]:
+    problems = []
+    for object_ in bpy.data.objects:
+        if object_.type != "MESH":
+            continue
+        modifiers = [modifier for modifier in object_.modifiers if modifier.type == "ARMATURE"]
+        if not modifiers:
+            continue
+        armature = modifiers[0].object
+        if armature is None or armature.type != "ARMATURE":
+            problems.append("{0}: 骨架修改器没有绑定骨架".format(object_.name))
+            continue
+        bones = {bone.name for bone in armature.data.bones}
+        if not bones:
+            problems.append("{0}: 绑定的骨架没有骨骼".format(object_.name))
+        for group in object_.vertex_groups:
+            if group.name not in bones:
+                problems.append(
+                    "{0}: 顶点组 {1} 在骨架 {2} 里没有对应骨骼".format(
+                        object_.name, group.name, armature.name
+                    )
+                )
+    return problems
+
+
+def world_height() -> float:
+    from mathutils import Vector
+
+    values = []
+    for object_ in bpy.data.objects:
+        if object_.type != "MESH":
+            continue
+        for corner in object_.bound_box:
+            values.append((object_.matrix_world @ Vector(corner)).z)
+    return (max(values) - min(values)) if values else 0.0
+
+
+def import_path(path: Path, **overrides) -> str:
+    options = {
+        "filepath": str(path),
+        "import_armatures": True,
+        "import_textures": True,
+        "pack_textures": True,
+        "unit_scale": 1.0,
+    }
+    options.update(overrides)
+    started = time.perf_counter()
+    try:
+        result = bpy.ops.import_scene.zipmod(**options)
+        status = "FINISHED" if result == {"FINISHED"} else "CANCELLED"
+    except RuntimeError as exc:
+        status = "ERROR: {0}".format(exc)
+    print("  -> {0} in {1:.2f}s: {2}".format(status, time.perf_counter() - started, path.name))
+    return status
+
+
+def main() -> int:
+    print("Blender {0} | Python {1}".format(bpy.app.version_string, sys.version.split()[0]))
+    bpy.ops.preferences.addon_enable(module="unity3d_assetbundle_importer")
+    check(hasattr(bpy.ops.import_scene, "unity3d_assetbundle"), "旧的 FBX 路线仍可用")
+
+    single = ensure_fixtures()
+    if not check(single is not None, "拿到固件（{0}）".format(ARCHIVE.name)):
+        print("SKIP: 游戏目录里没有固件 zipmod")
+        return 0
+
+    # 1) 单个 AssetBundle：几何、材质、贴图、骨架
+    reset_scene()
+    if check(import_path(single) == "FINISHED", "单个 .unity3d 导入完成"):
+        stats = scene_stats()
+        print("    stats:", stats)
+        check(stats["mesh_objects"] == 28, "28 个网格（实际 {0}）".format(stats["mesh_objects"]))
+        check(stats["vertices"] == 50368, "50368 个顶点（实际 {0}）".format(stats["vertices"]))
+        check(stats["uv_layers"] == stats["mesh_objects"], "每个网格都有 UV")
+        check(stats["materials"] >= 10, "材质 >= 10（实际 {0}）".format(stats["materials"]))
+        check(stats["images"] >= 8, "贴图 >= 8（实际 {0}）".format(stats["images"]))
+        check(stats["packed_images"] == stats["images"], "贴图全部 pack 进 .blend")
+        check(stats["armatures"] == 1, "合并成 1 套骨架（实际 {0}）".format(stats["armatures"]))
+        check(stats["modifiers"] == stats["mesh_objects"], "每个网格都挂了骨架修改器")
+        check(stats["vertex_groups"] > 0, "写入顶点组（实际 {0}）".format(stats["vertex_groups"]))
+        agreement = winding_agreement()
+        check(agreement > 0.9, "三角形绕序与法线一致：{0:.3f}".format(agreement))
+        problems = skin_integrity()
+        check(not problems, "蒙皮绑定自洽（{0} 个问题）".format(len(problems)))
+        for problem in problems[:5]:
+            print("    ", problem)
+        bone_total = sum(
+            len(object_.data.bones) for object_ in bpy.data.objects if object_.type == "ARMATURE"
+        )
+        check(bone_total == 181, "骨架合并了 181 根骨（实际 {0}）".format(bone_total))
+
+    # 2) 整个 zipmod：多 bundle
+    reset_scene()
+    if check(import_path(ARCHIVE) == "FINISHED", "整个 .zipmod 导入完成"):
+        stats = scene_stats()
+        print("    stats:", stats)
+        check(stats["mesh_objects"] == 34, "34 个网格（实际 {0}）".format(stats["mesh_objects"]))
+        check(stats["vertices"] == 128543, "128543 个顶点（实际 {0}）".format(stats["vertices"]))
+        check(stats["armatures"] == 2, "2 套骨架（实际 {0}）".format(stats["armatures"]))
+
+    # 3) 异常路径必须干净取消
+    reset_scene()
+    check(import_path(LOCAL / "does_not_exist.zipmod") != "FINISHED", "不存在的路径取消")
+    check(not bpy.data.objects and not bpy.data.collections, "取消后没有残留对象")
+
+    reset_scene()
+    broken = LOCAL / "broken.zipmod"
+    broken.write_bytes(b"not a zip file at all")
+    check(import_path(broken) != "FINISHED", "损坏的压缩包取消")
+    check(not bpy.data.objects and not bpy.data.collections, "取消后没有残留集合")
+
+    # 4) 导入缩放
+    reset_scene()
+    if check(import_path(single, unit_scale=0.1) == "FINISHED", "缩放 0.1 导入完成"):
+        height = world_height()
+        print("    world height: {0:.3f}".format(height))
+        check(0.5 < height < 2.5, "缩放 0.1 后约为米级（实际 {0:.3f}）".format(height))
+
+    # 5) 关掉骨骼时不建骨架
+    reset_scene()
+    if check(import_path(single, import_armatures=False) == "FINISHED", "关闭骨骼导入完成"):
+        stats = scene_stats()
+        check(stats["armatures"] == 0, "没有骨架（实际 {0}）".format(stats["armatures"]))
+        check(stats["mesh_objects"] == 28, "网格仍完整（实际 {0}）".format(stats["mesh_objects"]))
+
+    failed = [message for ok, message in RESULTS if not ok]
+    print("RESULT: {0} passed, {1} failed".format(len(RESULTS) - len(failed), len(failed)))
+    for message in failed:
+        print("  FAILED:", message)
+    return 1 if failed else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

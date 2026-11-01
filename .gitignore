@@ -12,5 +12,8 @@ obj/
 *_fbx_export/
 *_fbx_import_*/
 dist/
+_local/
+__pycache__/
+*.pyc
 third_party/AssetStudio/
 !third_party/README.md
