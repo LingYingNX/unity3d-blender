@@ -52,7 +52,8 @@ def attach_object_to_target(object_, target, bone_name: str | None = None, offse
     父空间原点在骨骼尾端），目标是空物体（HS2 的 N_* 挂点）时用对象父级。两种都不假设
     父空间约定：先实测父级矩阵，再反推 matrix_basis。
     """
-    scale = object_.scale.copy()
+    # 用世界缩放（可能来自上层总根，例如「导入缩放 0.1」），否则换父级时会把缩放丢掉。
+    scale = object_.matrix_world.to_scale()
     object_.matrix_parent_inverse = Matrix.Identity(4)
     object_.matrix_basis = Matrix.Identity(4)
     if bone_name:

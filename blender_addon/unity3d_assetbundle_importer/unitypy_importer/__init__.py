@@ -120,13 +120,17 @@ class UNITYPY_OT_import_zipmod(bpy.types.Operator, ImportHelper):
         bundles = []  # 每个 bundle 一个顶层集合 + 一个根空物体
         entries: dict[str, dict] = {}
         name_pools: dict[str, set[str]] = {}
+        # 一个总根：整套 mod（主体 + 花、蝴蝶结这类配件）都挂在它下面，一起移动、一起缩放。
+        root = bpy.data.objects.new(_unique_name(name_pools, source.stem or "Zipmod", "root"), None)
+        context.scene.collection.objects.link(root)
+        root.scale = (options.unit_scale,) * 3
         try:
             with unity_loader.collect_bundles(source) as bundle_set:
                 if not bundle_set.bundles:
                     for warning in bundle_set.warnings:
                         self.report({"WARNING"}, warning)
                     self.report({"ERROR"}, "{0} 里没有找到 AssetBundle".format(source.name))
-                    return self._rollback(bundles, importers)
+                    return self._rollback(bundles, importers, root)
                 unitypy = unity_loader.import_unitypy()
                 entries = unity_loader.read_characustom(bundle_set.characustom)
                 for reference in bundle_set.bundles:
@@ -137,7 +141,7 @@ class UNITYPY_OT_import_zipmod(bpy.types.Operator, ImportHelper):
                     context.scene.collection.children.link(bundle_collection)
                     bundle_root = bpy.data.objects.new(_unique_name(name_pools, bundle_name, "bundle"), None)
                     bundle_collection.objects.link(bundle_root)
-                    bundle_root.scale = (options.unit_scale,) * 3
+                    bundle_root.parent = root
                     bundles.append((bundle_collection, bundle_root))
                     importer = builder.BundleImporter(
                         unitypy, reference, options, bundle_collection, bundle_root, name_pools
@@ -148,10 +152,10 @@ class UNITYPY_OT_import_zipmod(bpy.types.Operator, ImportHelper):
                     self.report({"WARNING"}, warning)
         except unity_loader.UnityPyMissing as exc:
             self.report({"ERROR"}, str(exc).splitlines()[0])
-            return self._rollback(bundles, importers)
+            return self._rollback(bundles, importers, root)
         except Exception as exc:  # noqa: BLE001 - 任何异常都不能让 Blender 崩
             self.report({"ERROR"}, "{0}: {1}".format(type(exc).__name__, exc))
-            return self._rollback(bundles, importers)
+            return self._rollback(bundles, importers, root)
 
         imported = [report for report in reports if report.objects]
         if not imported:
@@ -161,7 +165,7 @@ class UNITYPY_OT_import_zipmod(bpy.types.Operator, ImportHelper):
                 for error in report.errors:
                     self.report({"ERROR"}, error)
             self.report({"WARNING"}, "{0} 没有导入任何网格".format(source.name))
-            return self._rollback(bundles, importers)
+            return self._rollback(bundles, importers, root)
 
         self._select(imported)
         self._attach_to_character_bone(context, bundles, importers, entries)
@@ -270,9 +274,15 @@ class UNITYPY_OT_import_zipmod(bpy.types.Operator, ImportHelper):
                 declared = (entry or {}).get("parent")
                 target = find_declared_node(declared, own)
                 if target is None:
-                    note = "（声明的父节点 {0} 不在场景里，按头骨粗略放置）".format(
-                        declared or "未声明"
+                    # 饰品和主体往往是一套（例如 polySurface977 属于 polySurface154 那套衣服，
+                    # 坐标本来就落在主体上）。挂点不可用时不能乱挪，留在它自己的坐标里。
+                    self.report(
+                        {"INFO"},
+                        "{0}（accessory）不挂：声明的父节点 {1} 不可用，保持 bundle 自身坐标".format(
+                            bundle_root.name, declared or "未声明"
+                        ),
                     )
+                    continue
             if target is None:
                 rig = pick_rig(own)
                 if rig is None:
@@ -311,8 +321,10 @@ class UNITYPY_OT_import_zipmod(bpy.types.Operator, ImportHelper):
                 {"WARNING"},
                 "{0}；需要的话用面板里的「目标骨骼 / 挂点偏移」手动指定".format("、".join(skipped)),
             )
-    def _rollback(self, bundles, importers):
+    def _rollback(self, bundles, importers, root=None):
         """失败时清掉本次新建的集合、物体和数据块，不留半成品。"""
+        if root is not None and root.name in bpy.data.objects:
+            bpy.data.objects.remove(root, do_unlink=True)
         for bundle_collection, bundle_root in bundles:
             if bundle_root.name in bpy.data.objects:
                 bpy.data.objects.remove(bundle_root, do_unlink=True)

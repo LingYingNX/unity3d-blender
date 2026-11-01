@@ -17,6 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "blender_addon"))
 
 import bpy  # noqa: E402
+from mathutils import Vector  # noqa: E402
 
 GAME_MODS = Path(r"F:\HY\HS22\HoneySelect2_ArcticFox\mods")
 ARCHIVE = GAME_MODS / "[YYG]-孙尚香 自由礼赞.zipmod"
@@ -272,8 +273,16 @@ def main() -> int:
         )
         print("    整包导入后挂到骨骼:", attached)
         check(
-            attached == ["[YYG]ZYLZSP", "[YYG]ZYLZTF"],
-            "没有身体包时头发与饰品都挂（饰品按头骨粗略放置）（实际 {0}）".format(attached),
+            attached == ["[YYG]ZYLZTF"],
+            "只挂头发；饰品留在主体坐标里（实际 {0}）".format(attached),
+        )
+        sp_collection = bpy.data.collections.get("[YYG]ZYLZSP")
+        sp_root = bpy.data.objects.get("[YYG]ZYLZSP")
+        check(
+            sp_root is not None and sp_root.parent_type != "BONE",
+            "饰品没有被挂到骨上（实际 {0}）".format(
+                sp_root.parent_bone if sp_root and sp_root.parent_type == "BONE" else None
+            ),
         )
         hair_collection = bpy.data.collections.get("[YYG]ZYLZTF")
         hair_meshes = [
@@ -360,8 +369,8 @@ def main() -> int:
             )
             print("    挂到骨骼的 bundle:", attached)
             check(
-                attached == ["[YYG]ZYLZSP", "[YYG]ZYLZTF"],
-                "整包挂上头发与饰品（实际 {0}）".format(attached),
+                attached == ["[YYG]ZYLZTF"],
+                "整包只挂头发（实际 {0}）".format(attached),
             )
 
     # 8) 有身体包时，饰品按 csv 声明的 N_* 挂点精确落位
@@ -385,20 +394,26 @@ def main() -> int:
             )
             check(
                 sp_root is not None
-                and sp_root.parent is not None
-                and sp_root.parent.type == "ARMATURE",
-                "占位节点被识别，饰品退回角色骨（实际父级 {0}）".format(
+                and not (sp_root.parent_type == "BONE"),
+                "占位节点被识别，饰品保持自身坐标（实际父级 {0}）".format(
                     sp_root.parent.name if sp_root and sp_root.parent else None
                 ),
             )
-            if sp_root is not None and sp_root.parent is not None:
+            if sp_root is not None:
+                sp_collection = bpy.data.collections.get("[YYG]ZYLZSP")
+                zs = [
+                    (object_.matrix_world @ Vector(corner)).z
+                    for object_ in (sp_collection.all_objects if sp_collection else [])
+                    if object_.type == "MESH"
+                    for corner in object_.bound_box
+                ]
+                print("    饰品 z 范围: {0:.2f} ~ {1:.2f}".format(min(zs), max(zs)))
                 check(
-                    sp_root.parent_type == "BONE" and sp_root.parent_bone == "cf_J_Head",
-                    "退回头骨（实际 {0}/{1}）".format(sp_root.parent_type, sp_root.parent_bone),
+                    -2.0 < min(zs) < 1.0,
+                    "饰品留在主体坐标（脚部附近，实际 {0:.2f} ~ {1:.2f}）".format(
+                        min(zs), max(zs)
+                    ),
                 )
-                height = sp_root.matrix_world.translation.z
-                print("    饰品原点高度: {0:.3f}".format(height))
-                check(height > 10.0, "饰品落在上半身而不是地面（z={0:.3f}）".format(height))
 
     failed = [message for ok, message in RESULTS if not ok]
     print("RESULT: {0} passed, {1} failed".format(len(RESULTS) - len(failed), len(failed)))
