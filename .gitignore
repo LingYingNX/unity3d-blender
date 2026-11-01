@@ -16,4 +16,5 @@ _local/
 __pycache__/
 *.pyc
 third_party/AssetStudio/
+legacy/assetstudio_fbx/tools/
 !third_party/README.md

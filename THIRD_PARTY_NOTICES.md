@@ -40,11 +40,12 @@ SOFTWARE.
 
 ## Bundled runtime dependencies
 
-仓库的 `legacy/assetstudio_fbx/tools/AssetBundleToBlender/` 保存着转换器运行时和依赖 DLL，
-包括 AssetStudio、Mono.Cecil、K4os.Compression.LZ4、SixLabors.ImageSharp、SixLabors.Fonts
-以及 AssetStudio 用的原生辅助 DLL。这些文件不再进入插件的 zip，只作为归档保留在仓库里。
+转换器运行时（AssetStudio、Mono.Cecil、K4os.Compression.LZ4、SixLabors.ImageSharp、
+SixLabors.Fonts 及原生辅助 DLL）**已从仓库移除**，需要时用 `scripts/build.ps1` 从源码重建到
+`legacy/assetstudio_fbx/tools/AssetBundleToBlender/`（该目录已加入 `.gitignore`）。这些文件
+不再进入插件的 zip。
 
-再分发这些依赖前，请先核对各自的上游许可证。
+重建或再分发这些依赖前，请先核对各自的上游许可证。
 
 ## AssetRipper
 
